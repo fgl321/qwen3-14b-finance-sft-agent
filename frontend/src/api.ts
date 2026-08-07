@@ -25,6 +25,22 @@ export interface ChatResponse {
   personal_memory?: Record<string, unknown>;
 }
 
+export interface Message {
+  role: "user" | "assistant";
+  content: string;
+  citations?: Citation[];
+  meta?: string;
+  error?: boolean;
+}
+
+export interface Conversation {
+  thread_id: string;
+  title: string;
+  created_at: number;
+  updated_at: number;
+  messages: Message[];
+}
+
 export interface ChatRequest {
   user_message: string;
   user_id: string;
@@ -62,6 +78,8 @@ const IDENTITY = {
   tenant_id: "default",
   knowledge_base_id: "kb_finance_basic",
 };
+
+const CONVERSATIONS_KEY = "finance_conversations";
 
 function uidKey(key: string): string {
   let value = localStorage.getItem(key);
@@ -101,6 +119,33 @@ export function getIdentity() {
 export function resetThread() {
   localStorage.removeItem("finance_tid");
   return getIdentity();
+}
+
+export function listConversations(): Conversation[] {
+  try {
+    const raw = localStorage.getItem(CONVERSATIONS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+export function saveConversations(list: Conversation[]): void {
+  localStorage.setItem(CONVERSATIONS_KEY, JSON.stringify(list));
+}
+
+export async function deleteChatHistory(threadId: string): Promise<void> {
+  const identity = getIdentity();
+  const params = new URLSearchParams({
+    user_id: identity.user_id,
+    tenant_id: identity.tenant_id,
+  });
+  await fetch(
+    `/api/chat/history/${encodeURIComponent(threadId)}?${params.toString()}`,
+    { method: "DELETE" },
+  );
 }
 
 export async function chat(payload: ChatRequest): Promise<ChatResponse> {

@@ -3,32 +3,29 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
   chat,
+  deleteChatHistory,
   deleteDocument,
   getIdentity,
   health,
   listDocuments,
+  listConversations,
   resetThread,
+  saveConversations,
   uploadDocument,
   type ChatResponse,
   type Citation,
+  type Conversation,
   type DocumentItem,
+  type Message,
 } from "./api";
 
-interface Message {
-  role: "user" | "assistant";
-  content: string;
-  citations?: Citation[];
-  meta?: string;
-  error?: boolean;
-}
+const GREETING =
+  "你好，我是基于 Qwen3-14B SFT 的金融助手。可以问我金融概念、家庭财务计算，也可以上传文档后基于知识库提问。";
 
 export default function App() {
-  const [messages, setMessages] = useState<Message[]>([
-    {
-      role: "assistant",
-      content: "你好，我是基于 Qwen3-14B SFT 的金融助手。可以问我金融概念、家庭财务计算，也可以上传文档后基于知识库提问。",
-    },
-  ]);
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [activeThreadId, setActiveThreadId] = useState("");
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [enableRag, setEnableRag] = useState(true);
@@ -49,6 +46,7 @@ export default function App() {
       else setStatus("服务未连接");
     });
     refreshDocuments();
+    initConversations();
   }, []);
 
   useEffect(() => {
@@ -63,11 +61,131 @@ export default function App() {
     }
   }
 
+  function initConversations() {
+    const stored = listConversations();
+    const identity = getIdentity();
+    if (stored.length === 0) {
+      const first: Conversation = {
+        thread_id: identity.thread_id,
+        title: "新对话",
+        created_at: Date.now(),
+        updated_at: Date.now(),
+        messages: [],
+      };
+      saveConversations([first]);
+      setConversations([first]);
+      setActiveThreadId(identity.thread_id);
+      setMessages([]);
+      return;
+    }
+    const found = stored.find((c) => c.thread_id === identity.thread_id);
+    if (found) {
+      setConversations(stored);
+      setActiveThreadId(found.thread_id);
+      setMessages(found.messages);
+      return;
+    }
+    const sorted = [...stored].sort((a, b) => b.updated_at - a.updated_at);
+    const latest = sorted[0];
+    localStorage.setItem("finance_tid", latest.thread_id);
+    setConversations(stored);
+    setActiveThreadId(latest.thread_id);
+    setMessages(latest.messages);
+  }
+
+  function commitActive(messages: Message[], title?: string) {
+    const next = conversations.map((conv) =>
+      conv.thread_id === activeThreadId
+        ? {
+            ...conv,
+            title: title ?? conv.title,
+            updated_at: Date.now(),
+            messages,
+          }
+        : conv,
+    );
+    setConversations(next);
+    saveConversations(next);
+  }
+
+  function switchConversation(threadId: string) {
+    if (busy || threadId === activeThreadId) return;
+    commitActive(messages);
+    const target = conversations.find((c) => c.thread_id === threadId);
+    localStorage.setItem("finance_tid", threadId);
+    setActiveThreadId(threadId);
+    setMessages(target?.messages || []);
+    setRaw("");
+    setInput("");
+  }
+
+  function createConversation() {
+    if (busy) return;
+    commitActive(messages);
+    const identity = resetThread();
+    const next: Conversation = {
+      thread_id: identity.thread_id,
+      title: "新对话",
+      created_at: Date.now(),
+      updated_at: Date.now(),
+      messages: [],
+    };
+    const nextList = [next, ...conversations];
+    setConversations(nextList);
+    saveConversations(nextList);
+    setActiveThreadId(identity.thread_id);
+    setMessages([]);
+    setCurrentDocumentId("");
+    setRaw("");
+    setInput("");
+  }
+
+  async function deleteConversation(threadId: string) {
+    if (busy) return;
+    const target = conversations.find((c) => c.thread_id === threadId);
+    if (!window.confirm(`删除会话「${target?.title || "新对话"}」？会同时清空服务器上的该会话短期记忆。`)) return;
+    try {
+      await deleteChatHistory(threadId);
+    } catch {
+      // 服务端清理失败不阻塞本地删除。
+    }
+    const remaining = conversations.filter((c) => c.thread_id !== threadId);
+    if (remaining.length === 0) {
+      const identity = resetThread();
+      const fresh: Conversation = {
+        thread_id: identity.thread_id,
+        title: "新对话",
+        created_at: Date.now(),
+        updated_at: Date.now(),
+        messages: [],
+      };
+      saveConversations([fresh]);
+      setConversations([fresh]);
+      setActiveThreadId(identity.thread_id);
+      setMessages([]);
+    } else if (threadId === activeThreadId) {
+      const fallback = remaining[0];
+      localStorage.setItem("finance_tid", fallback.thread_id);
+      setConversations(remaining);
+      saveConversations(remaining);
+      setActiveThreadId(fallback.thread_id);
+      setMessages(fallback.messages);
+    } else {
+      setConversations(remaining);
+      saveConversations(remaining);
+    }
+    setRaw("");
+  }
+
   async function submit() {
     const text = input.trim();
     if (!text || busy) return;
     setInput("");
-    setMessages((prev) => [...prev, { role: "user", content: text }]);
+    const nextMessages: Message[] = [
+      ...messages,
+      { role: "user", content: text },
+    ];
+    setMessages(nextMessages);
     setBusy(true);
     const started = Date.now();
     try {
@@ -87,37 +205,34 @@ export default function App() {
       const answer = response.final_answer || response.answer || "请求完成，但未找到回答字段。";
       const citations = response.rag?.citations || [];
       const seconds = ((Date.now() - started) / 1000).toFixed(1);
-      setMessages((prev) => [
-        ...prev,
+      const finalMessages: Message[] = [
+        ...nextMessages,
         {
           role: "assistant",
           content: answer,
           citations,
           meta: `${seconds}s · ${response.finish_reason || ""}`,
         },
-      ]);
+      ];
+      setMessages(finalMessages);
+      const current = conversations.find((c) => c.thread_id === activeThreadId);
+      const title =
+        current?.title && current.title !== "新对话"
+          ? current.title
+          : text.length > 18
+            ? `${text.slice(0, 18)}…`
+            : text;
+      commitActive(finalMessages, title);
     } catch (error) {
-      setMessages((prev) => [
-        ...prev,
+      const failed: Message[] = [
+        ...nextMessages,
         { role: "assistant", content: `请求失败：${(error as Error).message}`, error: true },
-      ]);
+      ];
+      setMessages(failed);
+      commitActive(failed);
     } finally {
       setBusy(false);
     }
-  }
-
-  function handleNewChat() {
-    if (busy) return;
-    resetThread();
-    setMessages([
-      {
-        role: "assistant",
-        content: "你好，我是基于 Qwen3-14B SFT 的金融助手。可以问我金融概念、家庭财务计算，也可以上传文档后基于知识库提问。",
-      },
-    ]);
-    setCurrentDocumentId("");
-    setRaw("");
-    setInput("");
   }
 
   async function handleUpload(file: File) {
@@ -160,16 +275,59 @@ export default function App() {
           </p>
         </div>
         <div className="header-actions">
-          <button className="link" onClick={handleNewChat} title="开启新的短期会话，长期记忆保留">
-            新建对话
-          </button>
           <div className="status" title={status}>{status}</div>
         </div>
       </header>
 
       <section className="layout">
+        <aside className="conv card">
+          <div className="conv-head">
+            <h2>会话</h2>
+            <button className="link" onClick={createConversation} title="开启新的短期会话，长期记忆保留">
+              ＋ 新建对话
+            </button>
+          </div>
+          <ul className="conv-list">
+            {conversations.map((conv) => (
+              <li
+                key={conv.thread_id}
+                className={`conv-item${conv.thread_id === activeThreadId ? " active" : ""}`}
+                onClick={() => switchConversation(conv.thread_id)}
+                title={conv.title}
+              >
+                <span className="conv-title">{conv.title}</span>
+                <span className="conv-meta">
+                  {new Date(conv.updated_at).toLocaleString("zh-CN", {
+                    month: "2-digit",
+                    day: "2-digit",
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  })}
+                </span>
+                <button
+                  className="link conv-delete"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    deleteConversation(conv.thread_id);
+                  }}
+                >
+                  删除
+                </button>
+              </li>
+            ))}
+            {conversations.length === 0 && <li className="empty">暂无会话</li>}
+          </ul>
+        </aside>
+
         <div className="chat card">
           <div className="messages">
+            {messages.length === 0 && !busy && (
+              <div className="message assistant">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                  {GREETING}
+                </ReactMarkdown>
+              </div>
+            )}
             {messages.map((message, index) => (
               <div key={index} className={`message ${message.role}${message.error ? " error" : ""}`}>
                 <ReactMarkdown remarkPlugins={[remarkGfm]}>

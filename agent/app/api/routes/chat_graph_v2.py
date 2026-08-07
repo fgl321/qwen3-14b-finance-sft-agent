@@ -767,3 +767,58 @@ async def production_chat_graph(
     finally:
         if provider_token is not None:
             reset_synthesis_provider(provider_token)
+
+
+@router.delete("/api/chat/history/{thread_id}")
+async def delete_chat_history(
+    thread_id: str,
+    request: Request,
+    user_id: str,
+    tenant_id: str = "default",
+) -> dict[str, Any]:
+    """清空某个会话的短期记忆（Redis），用于前端删除会话时同步清理。"""
+    clean_thread = str(thread_id).strip()
+    clean_user = str(user_id).strip()
+    fallback_request_id = f"api-prod-{uuid4()}"
+    if not clean_thread or not clean_user:
+        raise_agent_http_exception(
+            build_agent_error(
+                code="INVALID_HISTORY_TARGET",
+                category="invalid_input",
+                stage="api",
+                message="thread_id 和 user_id 不能为空。",
+                retryable=False,
+                http_status=400,
+                request_id=(
+                    request.headers.get("X-Request-ID")
+                    or fallback_request_id
+                ),
+            )
+        )
+    short_memory = _get_short_memory(request)
+    if short_memory is None:
+        raise_agent_http_exception(
+            build_agent_error(
+                code="SHORT_MEMORY_UNAVAILABLE",
+                category="unavailable",
+                stage="api",
+                message="短期记忆服务尚未初始化。",
+                retryable=True,
+                http_status=503,
+                request_id=(
+                    request.headers.get("X-Request-ID")
+                    or fallback_request_id
+                ),
+            )
+        )
+    deleted = await asyncio.to_thread(
+        short_memory.delete_thread,
+        user_id=clean_user,
+        thread_id=clean_thread,
+        tenant_id=str(tenant_id).strip() or "default",
+    )
+    return {
+        "ok": True,
+        "thread_id": clean_thread,
+        "deleted_keys": deleted,
+    }
