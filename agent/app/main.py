@@ -62,6 +62,16 @@ async def lifespan(
     """
 
     settings = get_settings()
+    synthesis_provider = str(
+        settings.synthesis_llm_provider
+    ).strip().lower()
+    # deepseek 模式：最终回答也走 DeepSeek，便于先验证全链路；
+    # 验证通过后把 SYNTHESIS_LLM_PROVIDER 改回 qwen 即可切换。
+    synthesis_llm_client = (
+        None
+        if synthesis_provider == "deepseek"
+        else app.state.qwen
+    )
 
     app.state.settings = settings
 
@@ -107,7 +117,7 @@ async def lifespan(
             embedding_provider=(
                 app.state.embedding_provider
             ),
-            answer_llm_client=app.state.qwen,
+            answer_llm_client=synthesis_llm_client,
             reranker=app.state.reranker,
             settings=settings,
         )
@@ -142,7 +152,7 @@ async def lifespan(
 
         async with open_production_graph_runtime(
             llm_client=app.state.deepseek,
-            synthesis_llm_client=app.state.qwen,
+            synthesis_llm_client=synthesis_llm_client,
             postgres_dsn=(
                 settings.postgres_dsn
             ),

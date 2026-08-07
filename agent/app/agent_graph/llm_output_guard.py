@@ -66,6 +66,9 @@ class OutputGuardRequest:
     citations: list[dict[str, Any]] = field(
         default_factory=list
     )
+    # 用户上下文（短期记忆历史摘要 + 长期记忆事实）。
+    # 这些是用户明确提供或已保存的个人事实，属于合法回答依据。
+    context_summary: str = field(default="")
 
 
 class OutputGuardInvocationResult(BaseModel):
@@ -563,6 +566,15 @@ class LLMOutputGuard:
                 ),
             },
             "citations": request.citations,
+            "user_context": {
+                "context_summary": request.context_summary,
+                "note": (
+                    "context_summary 中的内容来自短期对话历史或"
+                    "用户已确认的长期记忆事实，是合法回答依据。"
+                    "基于这些事实回答（例如用户自己提供的收入、"
+                    "家庭支出）不得判定为伪造或缺少证据。"
+                ),
+            },
         }
 
         return [

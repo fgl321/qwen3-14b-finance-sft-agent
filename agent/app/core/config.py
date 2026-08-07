@@ -65,6 +65,10 @@ class Settings(BaseSettings):
     qwen_read_timeout: float = 180.0
     qwen_max_retries: int = 2
 
+    # 最终回答生成模型：qwen=本地蒸馏模型，deepseek=DeepSeek API。
+    # 先用于全链路验证，验证通过后切回 qwen。
+    synthesis_llm_provider: str = "qwen"
+
     # =========================
     # PostgreSQL
     # =========================

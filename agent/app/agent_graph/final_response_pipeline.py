@@ -230,6 +230,7 @@ class FinalResponsePipeline:
                         loop_result=loop_result,
                         synthesis=last_synthesis,
                         citations=request.citations,
+                        context_summary=request.context_summary,
                     )
                 )
             )

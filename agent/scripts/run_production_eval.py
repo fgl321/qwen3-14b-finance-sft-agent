@@ -27,9 +27,15 @@ def ingest_documents(
     user_id: str,
     knowledge_base_id: str,
 ) -> list[dict]:
+    from app.core.config import get_settings
+    from app.rag.embedding_factory import build_embedding_provider
     from app.rag.document_lifecycle import RagDocumentLifecycleService
 
-    service = RagDocumentLifecycleService()
+    settings = get_settings()
+    embedding_provider = build_embedding_provider(settings=settings)
+    service = RagDocumentLifecycleService(
+        embedding_provider=embedding_provider,
+    )
     service.init_schema()
 
     results: list[dict] = []
@@ -164,11 +170,18 @@ async def main() -> None:
         print("=== 入库结果 ===")
         print(json.dumps(ingest_results, ensure_ascii=False, indent=2))
 
+    from app.core.config import get_settings
+    from app.llm.deepseek_client import DeepSeekClient
+
+    settings = get_settings()
+    judge_llm_client = DeepSeekClient(settings=settings)
+
     runner = ProductionEvalRunner(
         base_url=args.base_url,
         tenant_id=args.tenant_id,
         user_id=args.user_id,
         knowledge_base_id=args.knowledge_base_id,
+        judge_llm_client=judge_llm_client,
     )
     cases = runner.load_cases(args.cases)
     print(f"=== 加载 {len(cases)} 个用例 ===")
