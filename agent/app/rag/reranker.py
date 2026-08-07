@@ -215,7 +215,7 @@ class HttpReranker:
             return list(candidates)
 
         response = self._client.post(
-            "/v1/rerank",
+            f"{self.base_url}/rerank",
             json={
                 "query": query,
                 "texts": [chunk.text for chunk in candidates],

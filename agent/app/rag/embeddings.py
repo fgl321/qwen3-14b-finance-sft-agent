@@ -403,7 +403,7 @@ class HttpEmbeddingProvider(EmbeddingProvider):
         for start in range(0, len(normalized_texts), self.max_batch):
             batch = normalized_texts[start : start + self.max_batch]
             response = self._client.post(
-                "/v1/embed",
+                f"{self.base_url}/embed",
                 json={"texts": batch},
             )
             response.raise_for_status()
