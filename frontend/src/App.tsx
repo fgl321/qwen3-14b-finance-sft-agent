@@ -3,6 +3,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
   chat,
+  clearLongTermMemory,
   deleteChatHistory,
   deleteDocument,
   getIdentity,
@@ -265,6 +266,22 @@ export default function App() {
     }
   }
 
+  async function handleClearMemory() {
+    if (
+      !window.confirm(
+        "清除本用户的全部长期记忆？此操作不影响各会话的短期记忆。",
+      )
+    ) {
+      return;
+    }
+    try {
+      const deleted = await clearLongTermMemory();
+      window.alert(`已清除 ${deleted} 条长期记忆。`);
+    } catch {
+      window.alert("清除长期记忆失败");
+    }
+  }
+
   return (
     <main>
       <header>
@@ -417,6 +434,12 @@ export default function App() {
             <summary>最近一次原始响应</summary>
             <pre>{raw || "暂无"}</pre>
           </details>
+          <p className="hint" style={{ marginTop: 12 }}>
+            <button className="link" onClick={handleClearMemory}>
+              清除长期记忆
+            </button>
+            （跨会话共享，删除会话不影响长期记忆）
+          </p>
         </aside>
       </section>
     </main>

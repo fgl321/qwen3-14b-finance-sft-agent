@@ -148,6 +148,22 @@ export async function deleteChatHistory(threadId: string): Promise<void> {
   );
 }
 
+export async function clearLongTermMemory(): Promise<number> {
+  const identity = getIdentity();
+  const params = new URLSearchParams({
+    user_id: identity.user_id,
+    tenant_id: identity.tenant_id,
+  });
+  const response = await fetch(`/api/memory/facts?${params.toString()}`, {
+    method: "DELETE",
+  });
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}`);
+  }
+  const data = (await response.json()) as { deleted_count?: number };
+  return data.deleted_count ?? 0;
+}
+
 export async function chat(payload: ChatRequest): Promise<ChatResponse> {
   const response = await fetch("/api/chat/graph-v2", {
     method: "POST",
