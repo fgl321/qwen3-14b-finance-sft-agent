@@ -122,7 +122,7 @@ docs/                模型与交付说明
 - SHA-256：`4447f31637905b5a51aaf6a99bf2c1397c21e0dbebd0d44fcb5981fca8af739d`
 - 独立自托管加载：通过（NVIDIA A100 80GB，Qwen3-14B 基座 + Release 包）
 - Agent 单元测试：188 passed、1 skipped
-- RAG/端到端评测（13 个用例）：12 passed、1 known issue（记忆确认时回答略冗余）；
+- RAG/端到端评测（13 个用例）：13 passed；
   Recall@3/Recall@5 = 1.0、MRR = 1.0、nDCG@5 = 1.0、引用命中率 = 1.0。
   覆盖概念问答、RAG 命中/无证据拒答、提示注入隔离、数值复算、
   短期记忆、长期记忆与风险边界。详见 `docs/eval/`。

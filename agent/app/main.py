@@ -62,6 +62,14 @@ async def lifespan(
     """
 
     settings = get_settings()
+
+    app.state.settings = settings
+
+    app.state.deepseek = DeepSeekClient(
+        settings
+    )
+    app.state.qwen = QwenClient(settings)
+
     synthesis_provider = str(
         settings.synthesis_llm_provider
     ).strip().lower()
@@ -72,13 +80,6 @@ async def lifespan(
         if synthesis_provider == "deepseek"
         else app.state.qwen
     )
-
-    app.state.settings = settings
-
-    app.state.deepseek = DeepSeekClient(
-        settings
-    )
-    app.state.qwen = QwenClient(settings)
 
     try:
         logger.info(
