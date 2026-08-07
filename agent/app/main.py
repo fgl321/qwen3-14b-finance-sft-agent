@@ -26,6 +26,7 @@ from app.core.config import get_settings
 from app.core.logging import get_logger, setup_logging
 from app.llm.deepseek_client import DeepSeekClient
 from app.llm.qwen_client import QwenClient
+from app.llm.synthesis_proxy import SynthesisClientProxy
 from app.memory.short_term_memory import (
     ShortTermMemoryService,
 )
@@ -70,15 +71,12 @@ async def lifespan(
     )
     app.state.qwen = QwenClient(settings)
 
-    synthesis_provider = str(
-        settings.synthesis_llm_provider
-    ).strip().lower()
-    # deepseek 模式：最终回答也走 DeepSeek，便于先验证全链路；
-    # 验证通过后把 SYNTHESIS_LLM_PROVIDER 改回 qwen 即可切换。
-    synthesis_llm_client = (
-        None
-        if synthesis_provider == "deepseek"
-        else app.state.qwen
+    # 前端可以在每个请求里切换最终回答模型（qwen=蒸馏模型，deepseek=DeepSeek API），
+    # 无需重启；默认值来自 SYNTHESIS_LLM_PROVIDER。
+    synthesis_llm_client = SynthesisClientProxy(
+        qwen_client=app.state.qwen,
+        deepseek_client=app.state.deepseek,
+        default_provider=settings.synthesis_llm_provider,
     )
 
     try:

@@ -92,6 +92,7 @@ class RagAnswerService:
         child_limit: int = 8,
         parent_limit: int = 4,
         retrieval_query: str | None = None,
+        document_ids: list[str] | None = None,
     ) -> RagAnswerResult:
         child_limit = self._limit("rag_child_limit", child_limit)
         parent_limit = self._limit("rag_parent_limit", parent_limit)
@@ -108,6 +109,7 @@ class RagAnswerService:
             parent_limit=parent_limit,
             reranker=self.reranker,
             min_score=min_score,
+            document_ids=document_ids,
         )
 
         logger.info(

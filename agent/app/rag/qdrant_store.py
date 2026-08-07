@@ -24,6 +24,7 @@ from qdrant_client.models import (
     FieldCondition,
     Filter,
     FilterSelector,
+    MatchAny,
     MatchValue,
     PointStruct,
     SparseVector,
@@ -150,6 +151,7 @@ class QdrantRagStore:
         reranker: Any | None = None,
         min_score: float | None = None,
         rerank_candidate_limit: int = 12,
+        document_ids: list[str] | None = None,
     ) -> list[RetrievedChunk]:
         query_embedding = embedding_provider.embed_query(query)
 
@@ -157,6 +159,7 @@ class QdrantRagStore:
             tenant_id=tenant_id,
             owner_user_id=owner_user_id,
             knowledge_base_id=knowledge_base_id,
+            document_ids=document_ids,
         )
 
         dense_hits = self._search_child_dense(
@@ -189,6 +192,22 @@ class QdrantRagStore:
         )
 
         if not fused_hits:
+            if document_ids:
+                fallback = self._fallback_parent_chunks(
+                    tenant_id=tenant_id,
+                    owner_user_id=owner_user_id,
+                    knowledge_base_id=knowledge_base_id,
+                    document_ids=document_ids,
+                    parent_limit=parent_limit,
+                )
+                if fallback:
+                    logger.info(
+                        "rag_document_scope_positional_fallback",
+                        query=query,
+                        document_ids=list(document_ids),
+                        fallback_count=len(fallback),
+                    )
+                    return fallback
             return []
 
         parent_best_scores: dict[str, float] = {}
@@ -761,27 +780,96 @@ class QdrantRagStore:
         tenant_id: str,
         owner_user_id: str,
         knowledge_base_id: str,
+        document_ids: list[str] | None = None,
     ) -> Filter:
+        must_conditions = [
+            FieldCondition(
+                key="tenant_id",
+                match=MatchValue(value=tenant_id),
+            ),
+            FieldCondition(
+                key="owner_user_id",
+                match=MatchValue(value=owner_user_id),
+            ),
+            FieldCondition(
+                key="knowledge_base_id",
+                match=MatchValue(value=knowledge_base_id),
+            ),
+            FieldCondition(
+                key="chunk_type",
+                match=MatchValue(value="child"),
+            ),
+        ]
+        if document_ids:
+            must_conditions.append(
+                FieldCondition(
+                    key="document_id",
+                    match=MatchAny(
+                        any=[str(document_id) for document_id in document_ids]
+                    ),
+                )
+            )
         return Filter(
+            must=must_conditions,
+        )
+
+    def _fallback_parent_chunks(
+        self,
+        *,
+        tenant_id: str,
+        owner_user_id: str,
+        knowledge_base_id: str,
+        document_ids: list[str],
+        parent_limit: int,
+    ) -> list[RetrievedChunk]:
+        """按文档范围直接取父块（按位置），用于“这个文档讲了什么”类问题。"""
+        base = self._build_base_filter(
+            tenant_id=tenant_id,
+            owner_user_id=owner_user_id,
+            knowledge_base_id=knowledge_base_id,
+        )
+        parent_filter = Filter(
             must=[
-                FieldCondition(
-                    key="tenant_id",
-                    match=MatchValue(value=tenant_id),
-                ),
-                FieldCondition(
-                    key="owner_user_id",
-                    match=MatchValue(value=owner_user_id),
-                ),
-                FieldCondition(
-                    key="knowledge_base_id",
-                    match=MatchValue(value=knowledge_base_id),
-                ),
+                *base.must,
                 FieldCondition(
                     key="chunk_type",
-                    match=MatchValue(value="child"),
+                    match=MatchValue(value="parent"),
+                ),
+                FieldCondition(
+                    key="document_id",
+                    match=MatchAny(
+                        any=[str(document_id) for document_id in document_ids]
+                    ),
                 ),
             ]
         )
+        points = self._scroll_all_points(
+            scroll_filter=parent_filter,
+            max_points=max(parent_limit * 4, 16),
+            with_payload=True,
+        )
+        retrieved: list[RetrievedChunk] = []
+        for point in points:
+            payload = point.payload or {}
+            retrieved.append(
+                RetrievedChunk(
+                    chunk_id=payload.get("chunk_id", str(point.id)),
+                    document_id=payload.get("document_id", ""),
+                    file_name=payload.get("file_name", ""),
+                    text=payload.get("text", ""),
+                    score=0.0,
+                    page_start=payload.get("page_start"),
+                    page_end=payload.get("page_end"),
+                    section_path=payload.get("section_path") or [],
+                    metadata={
+                        **(payload.get("metadata") or {}),
+                        "retrieval_mode": "document_scope_positional_fallback",
+                        "score_type": "document_scope_fallback",
+                        "score_display": "文档范围原文",
+                    },
+                )
+            )
+        return retrieved[: max(parent_limit, 1)]
 
     @staticmethod
     def _build_document_filter(

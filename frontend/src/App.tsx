@@ -33,6 +33,8 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [enableRag, setEnableRag] = useState(true);
   const [ragMode, setRagMode] = useState<"off" | "auto" | "required">("auto");
+  const [synthesisProvider, setSynthesisProvider] = useState<"qwen" | "deepseek">("qwen");
+  const [currentDocumentId, setCurrentDocumentId] = useState("");
   const [uploading, setUploading] = useState(false);
   const [uploadMessage, setUploadMessage] = useState("");
   const [documents, setDocuments] = useState<DocumentItem[]>([]);
@@ -72,6 +74,8 @@ export default function App() {
       const response: ChatResponse = await chat({
         user_message: text,
         ...identity,
+        synthesis_llm_provider: synthesisProvider,
+        document_ids: currentDocumentId ? [currentDocumentId] : [],
         use_short_memory: true,
         use_long_memory: true,
         save_memory: true,
@@ -109,8 +113,10 @@ export default function App() {
       const result = await uploadDocument(file);
       if (!result.ok) throw new Error("上传返回失败");
       const chunks = result.chunks || {};
+      const docId = result.document?.document_id;
+      if (docId) setCurrentDocumentId(docId);
       setUploadMessage(
-        `已入库 ${result.document?.file_name || file.name}（父块 ${chunks.parent_count ?? 0}，子块 ${chunks.child_count ?? 0}）`,
+        `已入库 ${result.document?.file_name || file.name}（父块 ${chunks.parent_count ?? 0}，子块 ${chunks.child_count ?? 0}），已切换到该文档`,
       );
       await refreshDocuments();
     } catch (error) {
@@ -177,6 +183,18 @@ export default function App() {
               <option value="auto">自动</option>
               <option value="required">必须知识库</option>
               <option value="off">关闭</option>
+            </select>
+            <select value={synthesisProvider} onChange={(e) => setSynthesisProvider(e.target.value as "qwen" | "deepseek")}>
+              <option value="qwen">蒸馏 Qwen3-14B</option>
+              <option value="deepseek">DeepSeek API</option>
+            </select>
+            <select value={currentDocumentId} onChange={(e) => setCurrentDocumentId(e.target.value)}>
+              <option value="">全部文档</option>
+              {documents.map((doc) => (
+                <option key={doc.document_id} value={doc.document_id}>
+                  {doc.file_name || doc.document_id}
+                </option>
+              ))}
             </select>
             <textarea
               value={input}

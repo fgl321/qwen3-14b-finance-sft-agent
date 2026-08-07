@@ -22,6 +22,10 @@ from app.agent_graph.runtime.request_idempotency import (
     RequestIdempotencyConflict,
 )
 from app.core.logging import get_logger
+from app.llm.synthesis_proxy import (
+    reset_synthesis_provider,
+    set_synthesis_provider,
+)
 from app.memory.llm_fact_extractor import LLMFactExtractor
 from app.memory.long_term_memory import LongTermMemoryService
 from app.memory.short_term_memory import ShortTermMemoryService
@@ -60,6 +64,12 @@ class ProductionChatRequest(BaseModel):
     extract_long_memory: bool = True
     enable_rag: bool = True
     rag_mode: Literal["off", "auto", "required"] = "auto"
+    # 最终回答模型：qwen=本地蒸馏模型，deepseek=DeepSeek API（默认取服务端配置）。
+    synthesis_llm_provider: str | None = Field(
+        default=None, min_length=1, max_length=20
+    )
+    # 把检索范围限定到指定文档（“我上传的这个文档”场景）。
+    document_ids: list[str] = Field(default_factory=list)
 
 
 
@@ -84,6 +94,7 @@ def _rag_request_fingerprint(payload: ProductionChatRequest) -> str:
             "user_message": payload.user_message,
             "rag_mode": payload.rag_mode,
             "enable_rag": payload.enable_rag,
+            "document_ids": sorted(payload.document_ids),
         }
     )
 
@@ -296,6 +307,7 @@ async def _run_rag_attempt(
             tenant_id=payload.tenant_id,
             owner_user_id=payload.user_id,
             knowledge_base_id=payload.knowledge_base_id,
+            document_ids=payload.document_ids,
         )
         rag = _serialize_model(raw)
         if not isinstance(rag, dict):
@@ -561,6 +573,10 @@ async def production_chat_graph(
         or request.headers.get("X-Request-ID")
         or f"api-prod-{uuid4()}"
     )
+    provider = str(payload.synthesis_llm_provider or "").strip().lower()
+    provider_token = None
+    if provider in {"qwen", "deepseek"}:
+        provider_token = set_synthesis_provider(provider)
     service = getattr(request.app.state, "production_graph_service", None)
     if service is None:
         raise_agent_http_exception(
@@ -741,3 +757,6 @@ async def production_chat_graph(
                 **log_payload,
             )
         raise_agent_http_exception(error)
+    finally:
+        if provider_token is not None:
+            reset_synthesis_provider(provider_token)

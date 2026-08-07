@@ -31,6 +31,8 @@ export interface ChatRequest {
   thread_id: string;
   tenant_id: string;
   knowledge_base_id: string;
+  synthesis_llm_provider: "qwen" | "deepseek";
+  document_ids: string[];
   use_short_memory: boolean;
   use_long_memory: boolean;
   save_memory: boolean;
