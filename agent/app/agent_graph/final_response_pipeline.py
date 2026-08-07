@@ -92,11 +92,12 @@ def _usage_totals(
     usage: dict[str, Any],
 ) -> dict[str, int]:
     """抽取与最终 usage 相同的三个统计键。"""
-    return {
-        key: int(value)
-        for key in ("prompt_tokens", "completion_tokens", "total_tokens")
-        if isinstance(usage.get(key), int)
-    }
+    totals: dict[str, int] = {}
+    for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+        value = usage.get(key)
+        if isinstance(value, int):
+            totals[key] = int(value)
+    return totals
 
 
 def _sum_invocations_usage(
