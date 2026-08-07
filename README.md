@@ -83,6 +83,17 @@ Copy-Item agent\.env.example agent\.env
 
 浏览器访问 `http://127.0.0.1:8002/`。
 
+默认会打开内置的极简聊天页。可选地构建 React 前端（聊天 + 文档上传 +
+引用展示），构建产物会被 Agent 自动托管：
+
+```powershell
+cd frontend
+pnpm install
+pnpm build
+```
+
+然后重启 Agent 服务即可。
+
 ## 架构
 
 ```text
