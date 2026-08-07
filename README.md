@@ -72,6 +72,8 @@ Copy-Item agent\.env.example agent\.env
 - 填写下载者自己的 `DEEPSEEK_API_KEY`。
 - 将 `QWEN_API_KEY` 设置为第 3 步的本地密钥。
 - 保持 `QWEN_BASE_URL=http://127.0.0.1:8001/v1`。
+- 默认 `SYNTHESIS_LLM_PROVIDER=qwen`（最终回答由本地蒸馏模型生成）。
+  如需先用 DeepSeek 验证全链路，可临时改为 `deepseek`。
 
 随后执行：
 
@@ -119,6 +121,10 @@ docs/                模型与交付说明
 - 压缩包大小：242,086,199 bytes
 - SHA-256：`4447f31637905b5a51aaf6a99bf2c1397c21e0dbebd0d44fcb5981fca8af739d`
 - 独立自托管加载：通过（NVIDIA A100 80GB，Qwen3-14B 基座 + Release 包）
-- Agent 单元测试：159 passed、1 skipped
+- Agent 单元测试：188 passed、1 skipped
+- RAG/端到端评测（13 个用例）：12 passed、1 known issue（记忆确认时回答略冗余）；
+  Recall@3/Recall@5 = 1.0、MRR = 1.0、nDCG@5 = 1.0、引用命中率 = 1.0。
+  覆盖概念问答、RAG 命中/无证据拒答、提示注入隔离、数值复算、
+  短期记忆、长期记忆与风险边界。详见 `docs/eval/`。
 
 详细结果见 `docs/RELEASE_VALIDATION.md`。
