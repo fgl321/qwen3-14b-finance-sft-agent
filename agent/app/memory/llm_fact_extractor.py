@@ -9,6 +9,20 @@ from app.memory.long_term_memory import LongTermMemoryService
 
 _MEMORY_TOOL = "submit_memory_changes"
 
+
+def _fact_value_non_empty(value: dict[str, Any]) -> bool:
+    """递归判断事实值是否包含真实内容，避免存下空对象 {}。"""
+    for item in value.values():
+        if item is None or item == "" or item == []:
+            continue
+        if isinstance(item, dict):
+            if _fact_value_non_empty(item):
+                return True
+            continue
+        return True
+    return False
+
+
 _SYSTEM_PROMPT = """
 你是长期记忆抽取器，只处理用户明确表达、适合跨会话保留的稳定事实。
 
@@ -20,6 +34,8 @@ _SYSTEM_PROMPT = """
 5. 用户明确要求忘记某个白名单事实时，action=delete。
 6. 没有需要变更的长期事实时，也必须调用工具并返回 changes=[]。
 7. fact_type/fact_key 必须来自工具描述中的白名单。
+8. fact_value 必须包含实际值对象，例如 {"value": 25} 或
+   {"value": "金融行业相关工作"}；不允许返回空对象 {}。
 """.strip()
 
 
@@ -76,7 +92,13 @@ class LLMFactExtractor:
                                     },
                                     "fact_type": {"type": "string"},
                                     "fact_key": {"type": "string"},
-                                    "fact_value": {"type": "object"},
+                                    "fact_value": {
+                                        "type": "object",
+                                        "description": (
+                                            "实际值对象，必须非空，"
+                                            '例如 {"value": 25}。'
+                                        ),
+                                    },
                                     "confidence": {
                                         "type": "number",
                                         "minimum": 0,
@@ -146,16 +168,21 @@ class LLMFactExtractor:
                     )
                     if action not in {"upsert", "delete"}:
                         continue
+                    raw_value = (
+                        item.get("fact_value")
+                        if isinstance(item.get("fact_value"), dict)
+                        else {}
+                    )
+                    if action == "upsert" and not _fact_value_non_empty(
+                        raw_value
+                    ):
+                        continue
                     changes.append(
                         MemoryChange(
                             action=action,
                             fact_type=fact_type,
                             fact_key=fact_key,
-                            fact_value=(
-                                item.get("fact_value")
-                                if isinstance(item.get("fact_value"), dict)
-                                else {}
-                            ),
+                            fact_value=raw_value,
                             confidence=float(item.get("confidence", 0.95)),
                             is_user_confirmed=bool(
                                 item.get("is_user_confirmed", False)
