@@ -1,0 +1,8 @@
+{"case_id":"rag_pos_001","question":"根据知识库回答：紧急备用金通常建议覆盖几个月的必要支出？","expected_sufficient":true,"expected_document_id":"12ab5139-61ba-59be-a7c4-e8d8b48949a8","must_contain":["3到6个月","必要支出"]}
+{"case_id":"rag_pos_002","question":"根据知识库回答：必要支出包括哪些内容？","expected_sufficient":true,"expected_document_id":"12ab5139-61ba-59be-a7c4-e8d8b48949a8","must_contain":["房租","房贷","基础饮食","交通"]}
+{"case_id":"rag_pos_003","question":"根据知识库回答：什么情况下紧急备用金可以接近3个月支出？","expected_sufficient":true,"expected_document_id":"12ab5139-61ba-59be-a7c4-e8d8b48949a8","must_contain":["收入稳定","负债较低","保障较完善"]}
+{"case_id":"rag_pos_004","question":"根据知识库回答：什么情况下紧急备用金应该接近6个月支出？","expected_sufficient":true,"expected_document_id":"12ab5139-61ba-59be-a7c4-e8d8b48949a8","must_contain":["收入波动","房贷","子女","老人"]}
+{"case_id":"rag_pos_005","question":"根据知识库回答：寿险保障缺口的基础公式是什么？","expected_sufficient":true,"expected_document_id":"12ab5139-61ba-59be-a7c4-e8d8b48949a8","must_contain":["家庭负债","子女教育责任","已有寿险保额"]}
+{"case_id":"rag_neg_001","question":"根据知识库回答：新能源汽车电池质保政策是什么？","expected_sufficient":false,"expected_document_id":null,"must_contain":["证据不足"]}
+{"case_id":"rag_neg_002","question":"根据知识库回答：A100 显卡和 H800 显卡有什么区别？","expected_sufficient":false,"expected_document_id":null,"must_contain":["证据不足"]}
+{"case_id":"rag_neg_003","question":"根据知识库回答：Python 的装饰器怎么写？","expected_sufficient":false,"expected_document_id":null,"must_contain":["证据不足"]}

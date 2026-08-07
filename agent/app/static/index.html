@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Qwen3-14B 金融助手</title>
+  <style>
+    :root { color-scheme: light; --ink:#17202a; --muted:#667085; --line:#dfe5ec; --brand:#155eef; --bg:#f4f7fb; }
+    * { box-sizing:border-box; }
+    body { margin:0; font:15px/1.65 system-ui,"Microsoft YaHei",sans-serif; color:var(--ink); background:var(--bg); }
+    main { width:min(920px,94vw); margin:28px auto; }
+    header { display:flex; justify-content:space-between; gap:20px; align-items:end; margin-bottom:16px; }
+    h1 { margin:0; font-size:25px; } .sub { color:var(--muted); font-size:13px; }
+    .card { background:#fff; border:1px solid var(--line); border-radius:16px; box-shadow:0 8px 30px rgba(32,52,84,.07); }
+    #chat { min-height:480px; max-height:68vh; overflow:auto; padding:22px; }
+    .message { max-width:84%; padding:12px 15px; border-radius:14px; margin:10px 0; white-space:pre-wrap; overflow-wrap:anywhere; }
+    .user { margin-left:auto; color:#fff; background:var(--brand); border-bottom-right-radius:4px; }
+    .assistant { background:#f1f5f9; border-bottom-left-radius:4px; }
+    .error { background:#fff0f0; color:#a40000; }
+    .meta { color:var(--muted); font-size:12px; margin-top:6px; }
+    form { display:grid; grid-template-columns:1fr auto; gap:10px; padding:14px; border-top:1px solid var(--line); }
+    textarea { resize:vertical; min-height:52px; max-height:180px; padding:12px; border:1px solid #cbd5e1; border-radius:11px; font:inherit; }
+    button { border:0; border-radius:11px; padding:0 22px; color:#fff; background:var(--brand); font-weight:700; cursor:pointer; }
+    button:disabled { opacity:.55; cursor:not-allowed; }
+    details { margin-top:14px; color:var(--muted); } pre { white-space:pre-wrap; font-size:12px; }
+    @media (max-width:620px) { header { display:block; } form { grid-template-columns:1fr; } button { height:44px; } .message { max-width:94%; } }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <div><h1>Qwen3-14B 金融助手</h1><div class="sub">最终回答：蒸馏 Qwen｜规划、工具与安全：DeepSeek</div></div>
+    <div id="status" class="sub">正在检查服务…</div>
+  </header>
+  <section class="card">
+    <div id="chat"><div class="message assistant">你好，我可以协助进行个人财务分析、预算、储蓄目标和基础金融计算。</div></div>
+    <form id="form">
+      <textarea id="input" placeholder="请输入你的金融问题；Ctrl+Enter 发送" required></textarea>
+      <button id="send" type="submit">发送</button>
+    </form>
+  </section>
+  <details><summary>最近一次原始响应</summary><pre id="raw">暂无</pre></details>
+</main>
+<script>
+  const chat=document.querySelector('#chat'), form=document.querySelector('#form'), input=document.querySelector('#input');
+  const send=document.querySelector('#send'), statusEl=document.querySelector('#status'), raw=document.querySelector('#raw');
+  const uid=localStorage.finance_uid || (localStorage.finance_uid='web-'+crypto.randomUUID());
+  const tid=localStorage.finance_tid || (localStorage.finance_tid='thread-'+crypto.randomUUID());
+  function add(text, cls, meta=''){ const box=document.createElement('div'); box.className='message '+cls; box.textContent=text; if(meta){const m=document.createElement('div');m.className='meta';m.textContent=meta;box.append(m);} chat.append(box); chat.scrollTop=chat.scrollHeight; return box; }
+  async function health(){ try{ const r=await fetch('/health'); if(!r.ok)throw 0; const q=await fetch('/health/qwen'); statusEl.textContent=q.ok?'服务正常｜Qwen 已连接':'Agent 正常｜Qwen 未连接'; }catch{ statusEl.textContent='服务未连接'; } }
+  form.addEventListener('submit', async e=>{ e.preventDefault(); const text=input.value.trim(); if(!text)return; add(text,'user'); input.value=''; send.disabled=true; const waiting=add('正在分析…','assistant'); const started=Date.now(); try{
+      const response=await fetch('/api/chat/graph-v2',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({user_message:text,user_id:uid,thread_id:tid,tenant_id:'default',use_short_memory:true,use_long_memory:true,save_memory:true,extract_long_memory:true,enable_rag:true,rag_mode:'auto'})});
+      const data=await response.json(); raw.textContent=JSON.stringify(data,null,2); if(!response.ok)throw new Error(data?.detail?.message||data?.detail||'HTTP '+response.status);
+      waiting.textContent=data.final_answer||data.answer||data?.agent_result?.answer||'请求完成，但未找到回答字段。'; const m=document.createElement('div');m.className='meta';m.textContent=`${((Date.now()-started)/1000).toFixed(1)} 秒`;waiting.append(m);
+    }catch(err){waiting.className='message error';waiting.textContent='请求失败：'+err.message;}finally{send.disabled=false;input.focus();}
+  });
+  input.addEventListener('keydown',e=>{if(e.ctrlKey&&e.key==='Enter')form.requestSubmit();});
+  health(); input.focus();
+</script>
+</body>
+</html>

@@ -1,0 +1,4 @@
+{"case_id":"rag_life_insurance_formula_001","category":"rag_knowledge","message":"寿险保障缺口的基础公式是什么？请尽量基于知识库回答。","expected_keywords_any":["寿险","保障缺口","家庭负债","可用资产","寿险保额"],"forbidden_keywords":["稳赚","保证收益","一定收益"],"allow_known_issue":true}
+{"case_id":"rag_emergency_fund_001","category":"rag_knowledge","message":"请基于知识库解释紧急备用金是什么。","expected_keywords_any":["紧急备用金","备用金","必要支出","3","6"],"forbidden_keywords":["稳赚","保证收益","一定收益"],"allow_known_issue":true}
+{"case_id":"rag_monthly_expense_001","category":"rag_knowledge","message":"根据知识库，家庭年度必要支出和月度必要支出的关系是什么？","expected_keywords_any":["年度必要支出","月度必要支出","12","除以"],"forbidden_keywords":["稳赚","保证收益","一定收益"],"allow_known_issue":true}
+{"case_id":"rag_unknown_doc_001","category":"rag_refusal","message":"请基于知识库回答：这个知识库里有没有说明火星房地产投资策略？","expected_keywords_any":["没有找到","不足","不能基于知识库","证据不足","没有检索到"],"forbidden_keywords":["火星房地产稳赚","推荐买入","保证收益"],"allow_known_issue":true}

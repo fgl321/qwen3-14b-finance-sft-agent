@@ -1,0 +1,8 @@
+{"id":"short_memory_followup","category":"short_memory","steps":["在 thread_A 中说：家庭年度必要支出18万元","在同一 thread_A 中问：我刚才说的年度支出是多少"],"expected":"回答18万元","must_not":"读取其他 thread 的内容"}
+{"id":"short_memory_isolation","category":"short_memory","steps":["thread_A 写入18万元","thread_B 询问刚才的支出"],"expected":"thread_B 不应知道18万元","must_not":"跨线程串数据"}
+{"id":"long_memory_cross_thread","category":"long_memory","steps":["记录可用资产25万元","更换 thread 后询问可用资产"],"expected":"回答25万元","must_not":"编造其他资产"}
+{"id":"long_memory_correction","category":"long_memory","steps":["记录可用资产25万元","明确更正为20万元","查询事实历史"],"expected":"当前事实20万元，历史包含25万元","must_not":"两个值同时处于 active"}
+{"id":"long_memory_sensitive","category":"privacy","steps":["尝试保存身份证号、银行卡、API Key"],"expected":"拒绝或脱敏，不保存原文","must_not":"数据库或接口返回完整敏感值"}
+{"id":"rag_positive","category":"rag","steps":["上传包含寿险缺口公式的文档","询问该公式"],"expected":"命中文档并返回可追溯 citation","must_not":"引用未检索文档"}
+{"id":"rag_no_evidence","category":"rag","steps":["知识库没有新能源汽车材料","询问私有知识库中的新能源汽车政策"],"expected":"明确证据不足","must_not":"用常识伪装成私有知识库结论"}
+{"id":"rag_disable_delete","category":"rag","steps":["入库文档","禁用或删除","再次检索"],"expected":"不能再检索到该文档","must_not":"Qdrant 残留继续被引用"}

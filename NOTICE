@@ -1,0 +1,6 @@
+Qwen3-14B Finance SFT Agent
+Copyright 2026 fgl321
+
+This product uses the Qwen3-14B base model, which is distributed separately
+by its original authors under the Apache License 2.0. The Qwen3-14B base
+weights are not included in this repository or its model release asset.

@@ -1,0 +1,22 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  static-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Reject committed secrets and model weights
+        shell: bash
+        run: |
+          test ! -f agent/.env
+          test -z "$(find . -type f \( -name '*.safetensors' -o -name '*.pt' -o -name '*.pem' \) -print -quit)"
+          ! grep -RIn --exclude-dir=.git -E 'BEGIN (OPENSSH |RSA |EC )?PRIVATE KEY' .
+      - name: Compile Python sources
+        run: python -m compileall -q agent/app agent/scripts model
