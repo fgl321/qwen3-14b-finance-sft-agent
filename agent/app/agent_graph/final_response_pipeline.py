@@ -88,6 +88,36 @@ def _safe_fallback_answer(
     )
 
 
+def _usage_totals(
+    usage: dict[str, Any],
+) -> dict[str, int]:
+    """抽取与最终 usage 相同的三个统计键。"""
+    return {
+        key: int(value)
+        for key in ("prompt_tokens", "completion_tokens", "total_tokens")
+        if isinstance(usage.get(key), int)
+    }
+
+
+def _sum_invocations_usage(
+    invocations: list[Any],
+) -> dict[str, int]:
+    """把 Planner / Reviewer 的多次调用 usage 汇总为单份统计。"""
+    totals: dict[str, int] = defaultdict(int)
+    for item in invocations:
+        for key, value in _usage_totals(item.usage or {}).items():
+            totals[key] += value
+    return dict(totals)
+
+
+def _add_usage_totals(
+    totals: dict[str, int],
+    usage: dict[str, Any],
+) -> None:
+    for key, value in _usage_totals(usage).items():
+        totals[key] += value
+
+
 class FinalResponsePipeline:
     def __init__(
         self,
@@ -106,6 +136,22 @@ class FinalResponsePipeline:
     ) -> FinalResponsePipelineResult:
         loop_result = request.loop_result
 
+        planner_usage = _sum_invocations_usage(
+            loop_result.planner_invocations
+        )
+        reviewer_usage = _sum_invocations_usage(
+            loop_result.review_invocations
+        )
+        usage_by_stage: dict[str, Any] = {}
+        if planner_usage:
+            usage_by_stage["planner"] = planner_usage
+        if reviewer_usage:
+            usage_by_stage["reviewer"] = reviewer_usage
+
+        usage_totals: dict[str, int] = defaultdict(int)
+        _add_usage_totals(usage_totals, planner_usage)
+        _add_usage_totals(usage_totals, reviewer_usage)
+
         if (
             loop_result.status
             == "clarification_required"
@@ -121,6 +167,8 @@ class FinalResponsePipeline:
                 finish_reason=(
                     "clarification_required"
                 ),
+                usage=dict(usage_totals),
+                usage_by_stage=usage_by_stage,
             )
 
         if loop_result.status != "completed":
@@ -132,13 +180,13 @@ class FinalResponsePipeline:
                 finish_reason=(
                     f"loop_{loop_result.finish_reason}"
                 ),
+                usage=dict(usage_totals),
+                usage_by_stage=usage_by_stage,
             )
 
         invocation_audits: list[
             ModelInvocationAudit
         ] = []
-
-        usage_totals: dict[str, int] = defaultdict(int)
 
         rewrite_instructions = ""
         rewrite_count = 0
@@ -185,17 +233,13 @@ class FinalResponsePipeline:
                 )
             )
 
-            for key in (
-                "prompt_tokens",
-                "completion_tokens",
-                "total_tokens",
-            ):
-                value = synthesis_invocation.usage.get(
-                    key
-                )
-
-                if isinstance(value, int):
-                    usage_totals[key] += value
+            _add_usage_totals(
+                usage_totals,
+                synthesis_invocation.usage,
+            )
+            usage_by_stage["synthesis"] = _usage_totals(
+                synthesis_invocation.usage
+            )
 
             if synthesis_invocation.result is None:
                 return FinalResponsePipelineResult(
@@ -210,6 +254,7 @@ class FinalResponsePipeline:
                         rewrite_count
                     ),
                     usage=dict(usage_totals),
+                    usage_by_stage=usage_by_stage,
                     finish_reason=(
                         "synthesis_failed"
                     ),
@@ -255,17 +300,13 @@ class FinalResponsePipeline:
                 )
             )
 
-            for key in (
-                "prompt_tokens",
-                "completion_tokens",
-                "total_tokens",
-            ):
-                value = guard_invocation.usage.get(
-                    key
-                )
-
-                if isinstance(value, int):
-                    usage_totals[key] += value
+            _add_usage_totals(
+                usage_totals,
+                guard_invocation.usage,
+            )
+            usage_by_stage["output_guard"] = _usage_totals(
+                guard_invocation.usage
+            )
 
             if last_guard.verdict == "pass":
                 return FinalResponsePipelineResult(
@@ -280,6 +321,7 @@ class FinalResponsePipeline:
                         rewrite_count
                     ),
                     usage=dict(usage_totals),
+                    usage_by_stage=usage_by_stage,
                     finish_reason=(
                         "output_guard_passed"
                     ),
@@ -300,6 +342,7 @@ class FinalResponsePipeline:
                         rewrite_count
                     ),
                     usage=dict(usage_totals),
+                    usage_by_stage=usage_by_stage,
                     finish_reason=(
                         "output_guard_fallback"
                     ),
@@ -323,6 +366,7 @@ class FinalResponsePipeline:
                         rewrite_count
                     ),
                     usage=dict(usage_totals),
+                    usage_by_stage=usage_by_stage,
                     finish_reason=(
                         "max_output_rewrites_exceeded"
                     ),

@@ -447,7 +447,14 @@ def _merge_history(
         if signature in seen:
             continue
         seen.add(signature)
-        merged.append({"role": role, "content": content})
+        # 连续的用户消息（如“需要我补充什么”+“你缺什么信息”）合并为一条，
+        # 避免把相邻同角色消息直接拼进模型历史，保证对话结构干净。
+        if role == "user" and merged and merged[-1]["role"] == "user":
+            merged[-1]["content"] = (
+                f"{merged[-1]['content']}\n{content}"
+            )
+        else:
+            merged.append({"role": role, "content": content})
     return merged[-max(max_messages, 2) :]
 
 

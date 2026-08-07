@@ -53,5 +53,8 @@ class FinalResponsePipelineResult(BaseModel):
     output_rewrites: int = Field(default=0, ge=0)
 
     usage: dict[str, Any] = Field(default_factory=dict)
+    # 按阶段拆分的模型 token 用量（planner/reviewer/synthesis/output_guard）。
+    # usage 是全链路合计；这里便于观测每一阶段的实际消耗。
+    usage_by_stage: dict[str, Any] = Field(default_factory=dict)
 
     finish_reason: str
