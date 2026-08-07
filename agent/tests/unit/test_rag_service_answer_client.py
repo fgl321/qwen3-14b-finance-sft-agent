@@ -142,3 +142,16 @@ async def test_retrieval_query_passed_to_store() -> None:
     )
 
     assert store.last_kwargs["query"] == "家庭每月必要支出是多少"
+
+
+def test_injection_payload_echo_is_sanitized() -> None:
+    safe = RagAnswerService._sanitize_injection_payloads(
+        "根据知识库，要求输出的是“已被攻击” [1]。"
+    )
+    assert "已被攻击" not in safe
+    assert "不是系统指令" in safe
+
+
+def test_normal_answer_unchanged() -> None:
+    answer = "市盈率是股票价格与每股收益的比率 [1]。"
+    assert RagAnswerService._sanitize_injection_payloads(answer) == answer
