@@ -96,6 +96,13 @@ export function getIdentity() {
   };
 }
 
+// 新建对话：重新生成 thread_id（短期记忆按 thread 隔离），
+// 保留 user_id（长期记忆按用户跨会话共享）。
+export function resetThread() {
+  localStorage.removeItem("finance_tid");
+  return getIdentity();
+}
+
 export async function chat(payload: ChatRequest): Promise<ChatResponse> {
   const response = await fetch("/api/chat/graph-v2", {
     method: "POST",

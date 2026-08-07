@@ -7,6 +7,7 @@ import {
   getIdentity,
   health,
   listDocuments,
+  resetThread,
   uploadDocument,
   type ChatResponse,
   type Citation,
@@ -22,7 +23,6 @@ interface Message {
 }
 
 export default function App() {
-  const identity = getIdentity();
   const [messages, setMessages] = useState<Message[]>([
     {
       role: "assistant",
@@ -73,7 +73,7 @@ export default function App() {
     try {
       const response: ChatResponse = await chat({
         user_message: text,
-        ...identity,
+        ...getIdentity(),
         synthesis_llm_provider: synthesisProvider,
         document_ids: currentDocumentId ? [currentDocumentId] : [],
         use_short_memory: true,
@@ -104,6 +104,20 @@ export default function App() {
     } finally {
       setBusy(false);
     }
+  }
+
+  function handleNewChat() {
+    if (busy) return;
+    resetThread();
+    setMessages([
+      {
+        role: "assistant",
+        content: "你好，我是基于 Qwen3-14B SFT 的金融助手。可以问我金融概念、家庭财务计算，也可以上传文档后基于知识库提问。",
+      },
+    ]);
+    setCurrentDocumentId("");
+    setRaw("");
+    setInput("");
   }
 
   async function handleUpload(file: File) {
@@ -145,7 +159,12 @@ export default function App() {
             最终回答：蒸馏 Qwen3-14B SFT ｜规划/工具/记忆：DeepSeek ｜ RAG：BGE-M3 + Qdrant
           </p>
         </div>
-        <div className="status" title={status}>{status}</div>
+        <div className="header-actions">
+          <button className="link" onClick={handleNewChat} title="开启新的短期会话，长期记忆保留">
+            新建对话
+          </button>
+          <div className="status" title={status}>{status}</div>
+        </div>
       </header>
 
       <section className="layout">

@@ -150,9 +150,14 @@ def _parse_arguments(
     try:
         payload = json.loads(raw_arguments)
     except json.JSONDecodeError as exc:
-        raise SynthesisProtocolError(
-            "Synthesis function.arguments 不是合法 JSON。"
-        ) from exc
+        # DeepSeek 偶发在 arguments 里返回带前后缀的 JSON 文本，
+        # 这里先尝试提取其中的 JSON 对象，而不是直接判失败。
+        try:
+            payload = _extract_json_object(raw_arguments)
+        except SynthesisProtocolError:
+            raise SynthesisProtocolError(
+                "Synthesis function.arguments 不是合法 JSON。"
+            ) from exc
 
     if not isinstance(payload, dict):
         raise SynthesisProtocolError(
@@ -208,7 +213,7 @@ class LLMAnswerSynthesizer:
         self,
         *,
         llm_client: SynthesisLLMClient,
-        max_completion_tokens: int = 1200,
+        max_completion_tokens: int = 4096,
         max_protocol_repairs: int = 1,
     ) -> None:
         if max_completion_tokens <= 0:
