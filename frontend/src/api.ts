@@ -65,10 +65,26 @@ const IDENTITY = {
 function uidKey(key: string): string {
   let value = localStorage.getItem(key);
   if (!value) {
-    value = `${key}-${crypto.randomUUID()}`;
+    value = `${key}-${uuid()}`;
     localStorage.setItem(key, value);
   }
   return value;
+}
+
+// crypto.randomUUID 只在 https/localhost 等安全上下文可用；
+// 内网 http 部署时用 Math.random 兜底，避免白屏。
+function uuid(): string {
+  if (
+    typeof crypto !== "undefined" &&
+    typeof crypto.randomUUID === "function"
+  ) {
+    return crypto.randomUUID();
+  }
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === "x" ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
 }
 
 export function getIdentity() {
