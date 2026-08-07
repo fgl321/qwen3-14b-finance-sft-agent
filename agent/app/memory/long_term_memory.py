@@ -474,6 +474,37 @@ class LongTermMemoryService:
                 rows = cur.fetchall()
         return [self._row_to_fact(row) for row in rows if row]  # type: ignore[misc]
 
+    def format_facts_for_prompt(
+        self,
+        *,
+        user_id: str,
+        tenant_id: str = "default",
+        limit: int = 30,
+    ) -> str:
+        """
+        把用户长期事实格式化为 Agent 提示词上下文。
+
+        只包含 active 事实，并按更新时间倒序截取前 limit 条。
+        没有事实时返回固定提示文案。
+        """
+        facts = self.list_facts(
+            user_id=user_id,
+            tenant_id=tenant_id,
+        )
+        if not facts:
+            return "暂无长期记忆。"
+
+        lines = [
+            "以下是用户已明确提供并允许长期保存的事实。"
+            "回答时可使用，但不得推测未记录内容："
+        ]
+        for fact in facts[: max(1, int(limit))]:
+            lines.append(
+                f"- {fact.fact_type}.{fact.fact_key} = "
+                f"{json.dumps(fact.fact_value, ensure_ascii=False)}"
+            )
+        return "\n".join(lines)
+
     def get_fact(
         self,
         *,

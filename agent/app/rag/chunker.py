@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+import re
 from dataclasses import dataclass
 
 from app.rag.file_utils import clean_text, estimate_token_count
@@ -72,11 +73,20 @@ class ParentChildChunker:
         self,
         parsed_document: ParsedDocument,
     ) -> list[RagChunk]:
-        page_segments: list[tuple[int, str]] = []
+        page_segments: list[tuple[int, str, list[str]]] = []
 
         for page in parsed_document.pages:
+            current_path: list[str] = []
             for paragraph in self._split_page_into_paragraphs(page.text):
-                page_segments.append((page.page_number, paragraph))
+                heading = self._heading_of(paragraph)
+                if heading is not None:
+                    current_path = self._update_heading_path(
+                        current_path,
+                        heading,
+                    )
+                page_segments.append(
+                    (page.page_number, paragraph, list(current_path))
+                )
 
         windows = self._merge_segments_to_windows(
             segments=page_segments,
@@ -96,6 +106,7 @@ class ParentChildChunker:
             page_numbers = [item[0] for item in window]
             page_start = min(page_numbers) if page_numbers else None
             page_end = max(page_numbers) if page_numbers else None
+            section_path = list(window[0][2]) if window else []
 
             parent_id = self._stable_chunk_id(
                 document_id=parsed_document.meta.document_id,
@@ -116,7 +127,7 @@ class ParentChildChunker:
                     file_name=parsed_document.meta.file_name,
                     page_start=page_start,
                     page_end=page_end,
-                    section_path=[],
+                    section_path=section_path,
                     text=text,
                     token_count_estimate=token_count,
                     metadata={
@@ -138,7 +149,11 @@ class ParentChildChunker:
         parent_index = int(parent_chunk.metadata.get("parent_index", 1))
 
         segments = [
-            (parent_chunk.page_start or 1, paragraph)
+            (
+                parent_chunk.page_start or 1,
+                paragraph,
+                list(parent_chunk.section_path),
+            )
             for paragraph in self._split_page_into_paragraphs(parent_chunk.text)
         ]
 
@@ -198,15 +213,15 @@ class ParentChildChunker:
     def _merge_segments_to_windows(
         self,
         *,
-        segments: list[tuple[int, str]],
+        segments: list[tuple[int, str, list[str]]],
         token_limit: int,
         overlap_tokens: int,
-    ) -> list[list[tuple[int, str]]]:
-        windows: list[list[tuple[int, str]]] = []
-        current_window: list[tuple[int, str]] = []
+    ) -> list[list[tuple[int, str, list[str]]]]:
+        windows: list[list[tuple[int, str, list[str]]]] = []
+        current_window: list[tuple[int, str, list[str]]] = []
         current_tokens = 0
 
-        for page_number, segment in segments:
+        for page_number, segment, section_path in segments:
             segment = clean_text(segment)
             if not segment:
                 continue
@@ -218,6 +233,11 @@ class ParentChildChunker:
                     page_number=page_number,
                     text=segment,
                     token_limit=token_limit,
+                )
+                fallback_path = (
+                    current_window[0][2]
+                    if current_window
+                    else section_path
                 )
 
                 for hard_page_number, hard_segment in hard_split_segments:
@@ -234,7 +254,13 @@ class ParentChildChunker:
                             "\n".join(item[1] for item in current_window)
                         )
 
-                    current_window.append((hard_page_number, hard_segment))
+                    current_window.append(
+                        (
+                            hard_page_number,
+                            hard_segment,
+                            list(fallback_path),
+                        )
+                    )
                     current_tokens += hard_segment_tokens
 
                 continue
@@ -250,7 +276,9 @@ class ParentChildChunker:
                     "\n".join(item[1] for item in current_window)
                 )
 
-            current_window.append((page_number, segment))
+            current_window.append(
+                (page_number, segment, list(section_path))
+            )
             current_tokens += segment_tokens
 
         if current_window:
@@ -261,22 +289,25 @@ class ParentChildChunker:
     def _build_overlap_window(
         self,
         *,
-        current_window: list[tuple[int, str]],
+        current_window: list[tuple[int, str, list[str]]],
         overlap_tokens: int,
-    ) -> list[tuple[int, str]]:
+    ) -> list[tuple[int, str, list[str]]]:
         if overlap_tokens <= 0:
             return []
 
-        overlap_window: list[tuple[int, str]] = []
+        overlap_window: list[tuple[int, str, list[str]]] = []
         total_tokens = 0
 
-        for page_number, segment in reversed(current_window):
+        for page_number, segment, section_path in reversed(current_window):
             segment_tokens = estimate_token_count(segment)
 
             if total_tokens + segment_tokens > overlap_tokens:
                 break
 
-            overlap_window.insert(0, (page_number, segment))
+            overlap_window.insert(
+                0,
+                (page_number, segment, list(section_path)),
+            )
             total_tokens += segment_tokens
 
         return overlap_window
@@ -320,6 +351,55 @@ class ParentChildChunker:
             start = end
 
         return result
+
+    @staticmethod
+    def _heading_of(text: str) -> tuple[int, str] | None:
+        """
+        识别 Markdown / 中文编号标题。
+
+        返回 (level, title)；不是标题返回 None。
+        level 从 1 开始：Markdown # 为 1，中文“一、”为 1，
+        数字“1.”为 2，依此类推。
+        """
+        cleaned = text.strip()
+        if not cleaned:
+            return None
+
+        md = re.match(r"^(#{1,6})\s+(.+)$", cleaned)
+        if md:
+            return len(md.group(1)), md.group(2).strip()
+
+        chinese = re.match(
+            r"^([一二三四五六七八九十百]+)[、.．]\s*(.+)$",
+            cleaned,
+        )
+        if chinese:
+            return 1, chinese.group(2).strip()
+
+        numbered = re.match(
+            r"^(\d{1,3})[、.．]\s*(.+)$",
+            cleaned,
+        )
+        if numbered:
+            return 2, numbered.group(2).strip()
+
+        return None
+
+    @staticmethod
+    def _update_heading_path(
+        current_path: list[str],
+        heading: tuple[int, str],
+    ) -> list[str]:
+        """
+        维护当前标题路径。
+
+        遇到同级或更高级标题时，截断当前路径后追加新标题。
+        """
+        level, title = heading
+        level = max(1, level)
+        path = list(current_path[: max(level - 1, 0)])
+        path.append(title)
+        return path
 
     @staticmethod
     def _stable_chunk_id(

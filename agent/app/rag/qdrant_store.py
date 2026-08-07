@@ -147,6 +147,9 @@ class QdrantRagStore:
         child_limit: int = 8,
         parent_limit: int = 4,
         score_threshold: float | None = None,
+        reranker: Any | None = None,
+        min_score: float | None = None,
+        rerank_candidate_limit: int = 12,
     ) -> list[RetrievedChunk]:
         query_embedding = embedding_provider.embed_query(query)
 
@@ -275,7 +278,43 @@ class QdrantRagStore:
 
         retrieved.sort(key=lambda item: item.score, reverse=True)
 
-        return retrieved[:parent_limit]
+        if reranker is not None:
+            from app.rag.reranker import (
+                BgeReranker,
+                NoopReranker,
+            )
+
+            if not isinstance(reranker, NoopReranker):
+                candidates = retrieved[: max(rerank_candidate_limit, 1)]
+                reranked = reranker.rerank(
+                    query=query,
+                    candidates=candidates,
+                )
+                if reranked:
+                    normalized = BgeReranker.normalize_scores(reranked)
+                    retrieved = normalized
+                    logger.info(
+                        "rag_rerank_applied",
+                        query=query,
+                        before=len(candidates),
+                        after=len(normalized),
+                    )
+
+        if min_score is not None and min_score > 0:
+            before_filter = len(retrieved)
+            retrieved = [
+                item
+                for item in retrieved
+                if float(item.score) >= float(min_score)
+            ]
+            logger.info(
+                "rag_min_score_filter_applied",
+                min_score=min_score,
+                before=before_filter,
+                after=len(retrieved),
+            )
+
+        return retrieved[: max(parent_limit, 1)]
 
     def _search_child_dense(
         self,

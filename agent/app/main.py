@@ -31,6 +31,7 @@ from app.memory.short_term_memory import (
 from app.rag.embedding_factory import (
     build_embedding_provider,
 )
+from app.rag.reranker import build_reranker
 from app.rag.qdrant_store import QdrantRagStore
 from app.rag.rag_service import RagAnswerService
 
@@ -95,12 +96,19 @@ async def lifespan(
             settings=settings,
         )
 
+        app.state.reranker = build_reranker(
+            settings=settings,
+        )
+
         app.state.rag_service = RagAnswerService(
             llm_client=app.state.deepseek,
             store=app.state.rag_store,
             embedding_provider=(
                 app.state.embedding_provider
             ),
+            answer_llm_client=app.state.qwen,
+            reranker=app.state.reranker,
+            settings=settings,
         )
 
         logger.info(

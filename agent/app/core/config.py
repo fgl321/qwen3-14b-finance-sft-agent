@@ -99,6 +99,25 @@ class Settings(BaseSettings):
     rag_sparse_vector_name: str = "sparse"
     rag_dense_vector_size: int = 1024
 
+    # RAG 检索参数
+    rag_child_limit: int = 8
+    rag_parent_limit: int = 4
+    # 对外展示分数（0~100）低于该阈值的证据会被过滤，0 表示不过滤。
+    rag_min_score: float = 0.0
+
+    # Rerank
+    # 默认开启；模型加载失败时会自动降级为不重排，不影响主链路。
+    rag_rerank_enabled: bool = True
+    rag_rerank_model: str = "BAAI/bge-reranker-v2-m3"
+    rag_rerank_top_k: int = 6
+    rag_rerank_batch_size: int = 8
+    rag_rerank_device: str = ""
+    rag_rerank_use_fp16: bool = True
+
+    # 多轮查询改写
+    rag_query_rewrite_enabled: bool = True
+    rag_query_rewrite_max_tokens: int = 256
+
     # =========================
     # Embedding
     # =========================

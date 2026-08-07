@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import Counter
 from pathlib import Path
 from typing import Any
+from uuid import NAMESPACE_URL, uuid5
 
 from app.core.config import Settings, get_settings
 from app.core.logging import get_logger
@@ -10,7 +11,13 @@ from app.rag.chunker import ChunkingConfig, ParentChildChunker
 from app.rag.document_parser import DocumentParser
 from app.rag.embedding_factory import build_embedding_provider
 from app.rag.embeddings import EmbeddingProvider
+from app.rag.file_utils import calculate_sha256
 from app.rag.qdrant_store import QdrantRagStore
+from app.rag.rag_types import (
+    DocumentMeta,
+    ParsedDocument,
+    ParsedPage,
+)
 
 
 logger = get_logger(__name__)
@@ -65,13 +72,59 @@ class RagIngestionService:
         visibility: str = "private",
         original_file_name: str | None = None,
     ) -> dict[str, Any]:
-        parsed = self.parser.parse(
+        legacy_parsed = self.parser.parse(
             file_path=file_path,
             tenant_id=tenant_id,
             owner_user_id=owner_user_id,
             knowledge_base_id=knowledge_base_id,
             visibility=visibility,
             display_file_name=original_file_name,
+        )
+
+        # DocumentParser.parse() 返回旧版 str 兼容对象，没有 .meta。
+        # 这里把它转换成 rag_types.ParsedDocument，供父子分块器使用。
+        file_sha256 = calculate_sha256(file_path)
+        document_id = str(
+            uuid5(
+                NAMESPACE_URL,
+                "|".join(
+                    [
+                        str(tenant_id),
+                        str(owner_user_id),
+                        str(knowledge_base_id),
+                        file_sha256,
+                    ]
+                ),
+            )
+        )
+        meta = DocumentMeta(
+            document_id=document_id,
+            file_name=(
+                original_file_name
+                or getattr(legacy_parsed, "file_name", None)
+                or Path(file_path).name
+            ),
+            file_sha256=file_sha256,
+            tenant_id=str(tenant_id),
+            owner_user_id=str(owner_user_id),
+            knowledge_base_id=str(knowledge_base_id),
+            source_type=getattr(
+                legacy_parsed,
+                "source_type",
+                Path(file_path).suffix.lower().lstrip(".") or "text",
+            ),
+            visibility=visibility,
+            version=1,
+        )
+        parsed = ParsedDocument(
+            meta=meta,
+            pages=[
+                ParsedPage(
+                    page_number=page.page_number,
+                    text=page.text,
+                )
+                for page in (legacy_parsed.pages or [])
+            ],
         )
 
         logger.info(

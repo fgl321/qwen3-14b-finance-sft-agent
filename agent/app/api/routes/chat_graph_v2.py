@@ -26,6 +26,7 @@ from app.memory.llm_fact_extractor import LLMFactExtractor
 from app.memory.long_term_memory import LongTermMemoryService
 from app.memory.short_term_memory import ShortTermMemoryService
 from app.personal_data.models import PERSONAL_DATA_VERSION
+from app.rag.query_rewriter import QueryRewriter
 
 
 logger = get_logger(__name__)
@@ -200,6 +201,7 @@ async def _run_rag_attempt(
     payload: ProductionChatRequest,
     request: Request,
     request_id: str,
+    history_messages: list[dict[str, Any]],
 ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
     audit: dict[str, Any] = {
         "attempted": False,
@@ -263,8 +265,34 @@ async def _run_rag_attempt(
         return None, audit
 
     try:
+        settings = getattr(request.app.state, "settings", None)
+        rewrite_enabled = bool(
+            getattr(settings, "rag_query_rewrite_enabled", False)
+        )
+        retrieval_query = payload.user_message
+        if rewrite_enabled:
+            rewriter = QueryRewriter(
+                llm_client=getattr(
+                    request.app.state, "deepseek", None
+                ),
+                enabled=True,
+                max_tokens=int(
+                    getattr(
+                        settings,
+                        "rag_query_rewrite_max_tokens",
+                        256,
+                    )
+                    or 256
+                ),
+            )
+            retrieval_query = await rewriter.rewrite(
+                query=payload.user_message,
+                history_messages=history_messages,
+            )
+
         raw = await rag_service.answer(
             query=payload.user_message,
+            retrieval_query=retrieval_query,
             tenant_id=payload.tenant_id,
             owner_user_id=payload.user_id,
             knowledge_base_id=payload.knowledge_base_id,
@@ -627,6 +655,7 @@ async def production_chat_graph(
             payload=payload,
             request=request,
             request_id=request_id,
+            history_messages=final_history,
         )
         memory_audit["rag"] = rag_audit
         if rag_direct is not None:
