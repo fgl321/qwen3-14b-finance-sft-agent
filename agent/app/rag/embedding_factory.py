@@ -9,6 +9,7 @@ from app.rag.embeddings import (
     BgeM3EmbeddingProvider,
     EmbeddingProvider,
     FakeEmbeddingProvider,
+    HttpEmbeddingProvider,
 )
 
 
@@ -47,6 +48,12 @@ def _build_cache_key(
             settings.bge_m3_max_length,
             settings.bge_m3_device or "auto",
             settings.bge_m3_use_fp16,
+        )
+
+    if provider_name == "http":
+        return (
+            "http",
+            settings.embedding_http_url,
         )
 
     return (
@@ -101,9 +108,19 @@ def _create_embedding_provider(
             device=settings.bge_m3_device,
         )
 
+    if provider_name == "http":
+        logger.info(
+            "embedding_provider_selected",
+            provider="http",
+            url=settings.embedding_http_url,
+        )
+        return HttpEmbeddingProvider(
+            base_url=settings.embedding_http_url,
+        )
+
     raise ValueError(
         "未知 EMBEDDING_PROVIDER："
-        f"{settings.embedding_provider}。可选值：fake、bge-m3"
+        f"{settings.embedding_provider}。可选值：fake、bge-m3、http"
     )
 
 

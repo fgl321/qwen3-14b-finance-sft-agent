@@ -181,10 +181,104 @@ class BgeReranker:
         return normalized
 
 
+class HttpReranker:
+    """
+    通过 HTTP 调用远程 GPU rerank 服务（见 embed_server.py）。
+    """
+
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        top_k: int = 6,
+        timeout: float = 60.0,
+    ) -> None:
+        import httpx
+
+        self.base_url = base_url.rstrip("/")
+        self.top_k = max(1, int(top_k))
+        self._client = httpx.Client(
+            base_url=self.base_url,
+            timeout=timeout,
+            trust_env=False,
+        )
+
+    def rerank(
+        self,
+        *,
+        query: str,
+        candidates: list[RetrievedChunk],
+    ) -> list[RetrievedChunk]:
+        if not candidates:
+            return []
+        if len(candidates) == 1:
+            return list(candidates)
+
+        response = self._client.post(
+            "/v1/rerank",
+            json={
+                "query": query,
+                "texts": [chunk.text for chunk in candidates],
+            },
+        )
+        response.raise_for_status()
+        scores = list(response.json().get("scores") or [])
+
+        if len(scores) != len(candidates):
+            logger.warning(
+                "rag_http_rerank_score_count_mismatch",
+                score_count=len(scores),
+                candidate_count=len(candidates),
+            )
+            return list(candidates)
+
+        scored = sorted(
+            zip(candidates, scores),
+            key=lambda item: float(item[1]),
+            reverse=True,
+        )
+        return [
+            BgeReranker._apply_rerank_score(
+                chunk=chunk,
+                raw_score=float(score),
+            )
+            for chunk, score in scored[: self.top_k]
+        ]
+
+
 def build_reranker(
     settings: Any,
 ) -> Reranker:
     """根据配置构建重排器；任何失败都降级为 NoopReranker。"""
+    provider = str(
+        getattr(settings, "rag_rerank_provider", "local")
+    ).strip().lower()
+
+    if provider == "http":
+        try:
+            url = str(
+                getattr(settings, "rag_rerank_http_url", "")
+            ).strip()
+            if not url:
+                raise ValueError("rag_rerank_http_url 为空")
+            reranker = HttpReranker(
+                base_url=url,
+                top_k=int(getattr(settings, "rag_rerank_top_k", 6) or 6),
+            )
+            logger.info(
+                "rag_reranker_ready",
+                provider="http",
+                url=url,
+            )
+            return reranker
+        except Exception as exc:
+            logger.warning(
+                "rag_http_reranker_disabled_fallback_to_noop",
+                error_type=type(exc).__name__,
+                error=str(exc)[:200],
+            )
+            return NoopReranker()
+
     if not bool(getattr(settings, "rag_rerank_enabled", False)):
         return NoopReranker()
 

@@ -58,7 +58,6 @@ export interface UploadResponse {
 
 const IDENTITY = {
   tenant_id: "default",
-  owner_user_id: "web_user",
   knowledge_base_id: "kb_finance_basic",
 };
 
@@ -113,7 +112,8 @@ export async function uploadDocument(file: File): Promise<UploadResponse> {
   const form = new FormData();
   form.append("file", file);
   form.append("tenant_id", IDENTITY.tenant_id);
-  form.append("owner_user_id", IDENTITY.owner_user_id);
+  // 上传必须使用与聊天相同的用户 ID，否则租户隔离过滤会检索不到文档。
+  form.append("owner_user_id", getIdentity().user_id);
   form.append("knowledge_base_id", IDENTITY.knowledge_base_id);
   form.append("visibility", "private");
   const response = await fetch("/api/knowledge/documents", {
@@ -131,7 +131,7 @@ export async function uploadDocument(file: File): Promise<UploadResponse> {
 export async function listDocuments(): Promise<DocumentItem[]> {
   const params = new URLSearchParams({
     tenant_id: IDENTITY.tenant_id,
-    owner_user_id: IDENTITY.owner_user_id,
+    owner_user_id: getIdentity().user_id,
     knowledge_base_id: IDENTITY.knowledge_base_id,
   });
   const response = await fetch(`/api/knowledge/documents?${params.toString()}`);
@@ -142,7 +142,7 @@ export async function listDocuments(): Promise<DocumentItem[]> {
 export async function deleteDocument(documentId: string): Promise<void> {
   const params = new URLSearchParams({
     tenant_id: IDENTITY.tenant_id,
-    owner_user_id: IDENTITY.owner_user_id,
+    owner_user_id: getIdentity().user_id,
     knowledge_base_id: IDENTITY.knowledge_base_id,
   });
   await fetch(`/api/knowledge/documents/${documentId}?${params.toString()}`, {

@@ -113,6 +113,8 @@ class Settings(BaseSettings):
     # 默认开启；模型加载失败时会自动降级为不重排，不影响主链路。
     rag_rerank_enabled: bool = True
     rag_rerank_model: str = "BAAI/bge-reranker-v2-m3"
+    rag_rerank_provider: str = "local"
+    rag_rerank_http_url: str = ""
     rag_rerank_top_k: int = 6
     rag_rerank_batch_size: int = 8
     rag_rerank_device: str = ""
@@ -126,6 +128,8 @@ class Settings(BaseSettings):
     # Embedding
     # =========================
     embedding_provider: str = "bge-m3"
+    # embedding_provider=http 时使用远程 GPU embedding 服务
+    embedding_http_url: str = ""
 
     bge_m3_model_name: str = "BAAI/bge-m3"
     bge_m3_use_fp16: bool = True

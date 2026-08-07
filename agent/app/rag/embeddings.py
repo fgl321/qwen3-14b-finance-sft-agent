@@ -365,3 +365,75 @@ class FakeEmbeddingProvider(EmbeddingProvider):
             item / norm
             for item in values
         ]
+
+
+class HttpEmbeddingProvider(EmbeddingProvider):
+    """
+    通过 HTTP 调用远程 GPU embedding 服务（见 embed_server.py）。
+
+    用于把 BGE-M3 的推理放到 GPU 节点，本机 Agent 只做请求转发。
+    """
+
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        timeout: float = 60.0,
+        max_batch: int = 64,
+    ) -> None:
+        import httpx
+
+        self.base_url = base_url.rstrip("/")
+        self.max_batch = max(1, int(max_batch))
+        self._client = httpx.Client(
+            base_url=self.base_url,
+            timeout=timeout,
+            trust_env=False,
+        )
+
+    def embed_documents(
+        self,
+        texts: list[str],
+    ) -> list[TextEmbedding]:
+        normalized_texts = [
+            text if text and text.strip() else "<empty>"
+            for text in texts
+        ]
+        result: list[TextEmbedding] = []
+        for start in range(0, len(normalized_texts), self.max_batch):
+            batch = normalized_texts[start : start + self.max_batch]
+            response = self._client.post(
+                "/v1/embed",
+                json={"texts": batch},
+            )
+            response.raise_for_status()
+            payload = response.json()
+            for item in payload.get("embeddings") or []:
+                sparse_raw = item.get("sparse") or {}
+                result.append(
+                    TextEmbedding(
+                        dense=[float(value) for value in item.get("dense") or []],
+                        sparse=SparseEmbedding(
+                            indices=[
+                                int(index)
+                                for index in sparse_raw.get("indices") or []
+                            ],
+                            values=[
+                                float(value)
+                                for value in sparse_raw.get("values") or []
+                            ],
+                        ),
+                    )
+                )
+        if len(result) != len(normalized_texts):
+            raise ValueError(
+                "HTTP embedding 返回数量不一致："
+                f"expected={len(normalized_texts)}, got={len(result)}"
+            )
+        return result
+
+    def embed_query(
+        self,
+        text: str,
+    ) -> TextEmbedding:
+        return self.embed_documents([text])[0]
