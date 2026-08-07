@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
@@ -97,7 +98,10 @@ async def upload_document(
             store=store,
         )
 
-        result = ingestion_service.ingest_file(
+        # 同步 CPU/GPU 密集的解析与向量化放入线程池，
+        # 避免阻塞 FastAPI 事件循环导致整个 API 在索引期间不可用。
+        result = await asyncio.to_thread(
+            ingestion_service.ingest_file,
             file_path=saved_path,
             original_file_name=original_name,
             tenant_id=tenant_id,

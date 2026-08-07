@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+import threading
 from abc import ABC, abstractmethod
 from typing import Any, Iterable
 
@@ -63,6 +64,9 @@ class BgeM3EmbeddingProvider(EmbeddingProvider):
         self.batch_size = batch_size
         self.max_length = max_length
         self.device = device.strip()
+        # BGE-M3 推理线程安全：入库线程与检索线程可能并发调用，
+        # 用锁串行化推理，避免 torch 并发推理竞态。
+        self._inference_lock = threading.Lock()
 
         if self.device.lower() == "cpu":
             use_fp16 = False
@@ -115,14 +119,15 @@ class BgeM3EmbeddingProvider(EmbeddingProvider):
             for text in texts
         ]
 
-        output = self.model.encode(
-            normalized_texts,
-            batch_size=self.batch_size,
-            max_length=self.max_length,
-            return_dense=True,
-            return_sparse=True,
-            return_colbert_vecs=False,
-        )
+        with self._inference_lock:
+            output = self.model.encode(
+                normalized_texts,
+                batch_size=self.batch_size,
+                max_length=self.max_length,
+                return_dense=True,
+                return_sparse=True,
+                return_colbert_vecs=False,
+            )
 
         dense_vecs = output.get("dense_vecs")
         lexical_weights = output.get("lexical_weights") or []
