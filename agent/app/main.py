@@ -8,6 +8,7 @@ from typing import AsyncIterator
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse
 from fastapi.responses import FileResponse
 
@@ -507,4 +508,27 @@ app.include_router(
 
 @app.get("/", include_in_schema=False)
 async def web_frontend() -> FileResponse:
+    frontend_index = (
+        Path(__file__).resolve().parents[2]
+        / "frontend"
+        / "dist"
+        / "index.html"
+    )
+    if frontend_index.is_file():
+        return FileResponse(frontend_index)
     return FileResponse(Path(__file__).parent / "static" / "index.html")
+
+
+# React 构建产物存在时，托管其静态资源；API 路由优先于该挂载。
+_FRONTEND_DIST_ASSETS = (
+    Path(__file__).resolve().parents[2]
+    / "frontend"
+    / "dist"
+    / "assets"
+)
+if _FRONTEND_DIST_ASSETS.is_dir():
+    app.mount(
+        "/assets",
+        StaticFiles(directory=_FRONTEND_DIST_ASSETS),
+        name="frontend-assets",
+    )
