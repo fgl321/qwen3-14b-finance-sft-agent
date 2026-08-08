@@ -268,6 +268,63 @@ class ParentChildChunker:
                 )
             )
 
+        if not child_chunks:
+            # 短文档兜底：保证每个父块至少有一个子块，
+            # 否则纯父块文档无法被全局 child 检索命中。
+            text = clean_text(parent_chunk.text)
+            if text:
+                child_id = self._stable_chunk_id(
+                    document_id=parent_chunk.document_id,
+                    chunk_type="child",
+                    index=1,
+                    text=f"{parent_chunk.chunk_id}:{text}",
+                )
+                child_chunks.append(
+                    RagChunk(
+                        chunk_id=child_id,
+                        parent_id=parent_chunk.parent_id,
+                        document_id=parent_chunk.document_id,
+                        tenant_id=parent_chunk.tenant_id,
+                        owner_user_id=parent_chunk.owner_user_id,
+                        knowledge_base_id=(
+                            parent_chunk.knowledge_base_id
+                        ),
+                        visibility=parent_chunk.visibility,
+                        file_name=parent_chunk.file_name,
+                        page_start=parent_chunk.page_start,
+                        page_end=parent_chunk.page_end,
+                        section_path=parent_chunk.section_path,
+                        text=text,
+                        token_count_estimate=(
+                            estimate_token_count(text)
+                        ),
+                        metadata={
+                            "chunk_type": "child",
+                            "parent_index": parent_index,
+                            "child_index": 1,
+                            "parent_chunk_id": (
+                                parent_chunk.chunk_id
+                            ),
+                            "file_sha256": (
+                                parent_chunk.metadata.get(
+                                    "file_sha256"
+                                )
+                            ),
+                            "source_type": (
+                                parent_chunk.metadata.get(
+                                    "source_type"
+                                )
+                            ),
+                            "document_version": (
+                                parent_chunk.metadata.get(
+                                    "document_version"
+                                )
+                            ),
+                            "fallback_child": True,
+                        },
+                    )
+                )
+
         return child_chunks
 
     def _merge_segments_to_windows(
