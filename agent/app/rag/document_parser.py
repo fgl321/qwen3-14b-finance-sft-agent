@@ -15,6 +15,9 @@ SUPPORTED_EXTENSIONS = {
     ".csv",
     ".pdf",
     ".docx",
+    ".png",
+    ".jpg",
+    ".jpeg",
 }
 
 
@@ -63,6 +66,8 @@ def _parse_csv(path: Path) -> str:
 
 def _extract_pdf_pages(
     path: Path,
+    *,
+    ocr_enabled: bool = True,
 ) -> tuple[list[tuple[int, str]], int]:
     """
     逐页提取 PDF 文本。
@@ -95,6 +100,25 @@ def _extract_pdf_pages(
                     text = normalize_document_text(raw)
                     if text:
                         pages.append((index + 1, text))
+                        continue
+                    if ocr_enabled:
+                        try:
+                            from app.rag.ocr import (
+                                ocr_text_from_pixmap,
+                            )
+
+                            pixmap = document[index].get_pixmap(
+                                matrix=fitz.Matrix(2, 2)
+                            )
+                            ocr_text = normalize_document_text(
+                                ocr_text_from_pixmap(pixmap)
+                            )
+                            if ocr_text:
+                                pages.append(
+                                    (index + 1, ocr_text)
+                                )
+                        except Exception:
+                            pass
             finally:
                 document.close()
         except Exception:
@@ -117,12 +141,20 @@ def _extract_pdf_pages(
         text = normalize_document_text(raw)
         if text:
             pages.append((index, text))
+        # pypdf 回退路径不做 OCR（无法渲染页面），
+        # OCR 由 PyMuPDF 主路径覆盖。
     return pages, total_pages
 
 
-def _parse_pdf(path: Path) -> str:
-    pages, _ = _extract_pdf_pages(path)
+def _parse_pdf(path: Path, *, ocr_enabled: bool = True) -> str:
+    pages, _ = _extract_pdf_pages(path, ocr_enabled=ocr_enabled)
     return "\n\n".join(text for _, text in pages)
+
+
+def _parse_image(path: Path) -> str:
+    from app.rag.ocr import ocr_text_from_bytes
+
+    return ocr_text_from_bytes(path.read_bytes())
 
 def _parse_docx(path: Path) -> str:
     try:
@@ -156,7 +188,9 @@ def parse_document(path: str | Path) -> str:
     elif suffix == ".csv":
         text = _parse_csv(file_path)
     elif suffix == ".pdf":
-        text = _parse_pdf(file_path)
+        text = _parse_pdf(file_path, ocr_enabled=True)
+    elif suffix in {".png", ".jpg", ".jpeg"}:
+        text = _parse_image(file_path)
     elif suffix == ".docx":
         text = _parse_docx(file_path)
     else:  # pragma: no cover
@@ -269,6 +303,8 @@ def _pages_from_path(path: Path, normalized_text: str) -> list[ParsedPage]:
 
 def _parse_document_with_pages(
     path: Path,
+    *,
+    ocr_enabled: bool = True,
 ) -> tuple[str, list[ParsedPage], dict[str, Any]]:
     """
     单次读取文档，返回 (全文, 页面列表, 元信息)。
@@ -281,11 +317,14 @@ def _parse_document_with_pages(
     metadata: dict[str, Any] = {"source_path": str(path)}
 
     if suffix == ".pdf":
-        extracted, total_pages = _extract_pdf_pages(path)
+        extracted, total_pages = _extract_pdf_pages(
+            path,
+            ocr_enabled=ocr_enabled,
+        )
         if not extracted:
             raise ValueError(
                 "文档没有可提取的文本内容"
-                "（纯图片/扫描件 PDF 暂不支持 OCR）。"
+                "（纯图片/扫描件 PDF 未能识别出文字）。"
             )
         metadata["total_pages"] = total_pages
         metadata["extracted_pages"] = len(extracted)
@@ -295,6 +334,19 @@ def _parse_document_with_pages(
             for page_number, page_text in extracted
         ]
         return text, pages, metadata
+
+    if suffix in {".png", ".jpg", ".jpeg"}:
+        if not ocr_enabled:
+            raise ValueError(
+                "图片文档需要 OCR，但 OCR 功能未启用。"
+            )
+        text = _parse_image(path)
+        if not text.strip():
+            raise ValueError(
+                "图片中没有识别到文字。"
+            )
+        metadata["source_type"] = "image"
+        return text, [ParsedPage(page_number=1, text=text)], metadata
 
     text = parse_document(path)
     return text, [ParsedPage(page_number=1, text=text)], metadata
@@ -394,7 +446,17 @@ class DocumentParser:
 
         assert path is not None
         try:
-            text, pages, metadata = _parse_document_with_pages(path)
+            ocr_enabled = bool(
+                getattr(
+                    getattr(self, "settings", None),
+                    "ocr_enabled",
+                    True,
+                )
+            )
+            text, pages, metadata = _parse_document_with_pages(
+                path,
+                ocr_enabled=ocr_enabled,
+            )
             display_name = file_name or path.name
             source_type = path.suffix.lower().lstrip(".") or "text"
             return ParsedDocument(

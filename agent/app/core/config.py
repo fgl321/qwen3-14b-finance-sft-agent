@@ -119,6 +119,9 @@ class Settings(BaseSettings):
     # RAG 直接答案的 Redis 缓存 TTL（秒）。
     rag_answer_cache_ttl_seconds: int = 300
 
+    # 图片/扫描件 OCR：对无文字层的 PDF 页和图片文件做文字识别。
+    ocr_enabled: bool = True
+
     # Rerank
     # 默认开启；模型加载失败时会自动降级为不重排，不影响主链路。
     rag_rerank_enabled: bool = True

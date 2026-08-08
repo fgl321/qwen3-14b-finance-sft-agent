@@ -407,7 +407,7 @@ export default function App() {
           <label className="upload">
             <input
               type="file"
-              accept=".txt,.md,.markdown,.json,.jsonl,.csv,.pdf,.docx"
+              accept=".txt,.md,.markdown,.json,.jsonl,.csv,.pdf,.docx,.png,.jpg,.jpeg"
               disabled={uploading}
               onChange={(e) => {
                 const file = e.target.files?.[0];
