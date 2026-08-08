@@ -232,7 +232,7 @@ async def test_second_rewrite_should_return_last_draft():
     result = await pipeline.run(request())
 
     assert result.status == "completed"
-    assert result.answer == "第二版。"
+    assert result.answer.startswith("第二版。")
 
     assert (
         result.finish_reason

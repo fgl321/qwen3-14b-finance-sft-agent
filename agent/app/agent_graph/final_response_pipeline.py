@@ -192,6 +192,7 @@ class FinalResponsePipeline:
 
         rewrite_instructions = ""
         rewrite_count = 0
+        guard_retry_count = 0
 
         last_synthesis: SynthesisResult | None = None
         last_guard = None
@@ -330,6 +331,28 @@ class FinalResponsePipeline:
                 )
 
             if last_guard.verdict == "fallback":
+                risk_flags = (
+                    last_guard.risk_flags or []
+                )
+                transient_failure = (
+                    "guard_service_unavailable" in risk_flags
+                    or "guard_protocol_failure" in risk_flags
+                )
+                if (
+                    transient_failure
+                    and guard_retry_count < 2
+                ):
+                    # Guard 瞬时失败（API/协议）时不直接兜底，
+                    # 对同一版草稿重试 Guard。
+                    guard_retry_count += 1
+                    logger.warning(
+                        "output_guard_transient_retry",
+                        request_id=request.request_id,
+                        run_id=request.run_id,
+                        retry_count=guard_retry_count,
+                        risk_flags=risk_flags,
+                    )
+                    continue
                 return FinalResponsePipelineResult(
                     status="fallback",
                     answer=_safe_fallback_answer(

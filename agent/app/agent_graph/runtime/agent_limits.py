@@ -19,7 +19,7 @@ class AgentLimits:
     max_same_error_count: int = 2
     max_consecutive_no_progress_rounds: int = 2
     max_plan_revisions: int = 2
-    max_output_rewrites: int = 1
+    max_output_rewrites: int = 3
 
     default_tool_timeout_seconds: float = 10.0
     total_run_timeout_seconds: float = 120.0
