@@ -67,7 +67,67 @@ class ParentChildChunker:
 
             all_chunks.extend(child_chunks)
 
+        if not all_chunks:
+            fallback_chunks = self._build_fallback_chunks(
+                parsed_document=parsed_document,
+            )
+            all_chunks.extend(fallback_chunks)
+
         return all_chunks
+
+    def _build_fallback_chunks(
+        self,
+        parsed_document: ParsedDocument,
+    ) -> list[RagChunk]:
+        """
+        短文档（如 OCR 图片识别出的少量文字）保底：整篇作为一个父块入库，
+        避免“有文字但 0 分块”导致无法检索。
+        """
+        pages = [
+            page
+            for page in (parsed_document.pages or [])
+            if str(page.text or "").strip()
+        ]
+        if not pages:
+            return []
+        text = clean_text(
+            "\n".join(str(page.text) for page in pages)
+        )
+        if not text:
+            return []
+
+        parent_index = 1
+        parent_id = self._stable_chunk_id(
+            document_id=parsed_document.meta.document_id,
+            chunk_type="parent",
+            index=parent_index,
+            text=text,
+        )
+        parent_chunk = RagChunk(
+            chunk_id=parent_id,
+            parent_id=parent_id,
+            document_id=parsed_document.meta.document_id,
+            tenant_id=parsed_document.meta.tenant_id,
+            owner_user_id=parsed_document.meta.owner_user_id,
+            knowledge_base_id=parsed_document.meta.knowledge_base_id,
+            visibility=parsed_document.meta.visibility,
+            file_name=parsed_document.meta.file_name,
+            page_start=pages[0].page_number,
+            page_end=pages[-1].page_number,
+            section_path=[],
+            text=text,
+            token_count_estimate=estimate_token_count(text),
+            metadata={
+                "chunk_type": "parent",
+                "parent_index": parent_index,
+                "file_sha256": parsed_document.meta.file_sha256,
+                "source_type": parsed_document.meta.source_type,
+                "document_version": parsed_document.meta.version,
+                "fallback_short_document": True,
+            },
+        )
+        children = self._build_child_chunks(parent_chunk)
+        return [parent_chunk, *children]
 
     def _build_parent_chunks(
         self,
