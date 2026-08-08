@@ -105,7 +105,7 @@ def loop_result():
     )
 
 
-def request(answer):
+def request(answer, *, used_tool_call_ids=None):
     return OutputGuardRequest(
         request_id="request_test",
         run_id="run_test",
@@ -113,7 +113,11 @@ def request(answer):
         loop_result=loop_result(),
         synthesis=SynthesisResult(
             answer=answer,
-            used_tool_call_ids=["call_1"],
+            used_tool_call_ids=(
+                used_tool_call_ids
+                if used_tool_call_ids is not None
+                else ["call_1"]
+            ),
             used_citation_ids=[],
             uncertainty=None,
             disclaimer_required=True,
@@ -121,7 +125,7 @@ def request(answer):
     )
 
 
-def test_deterministic_guard_should_detect_unsafe_text():
+def test_deterministic_guard_only_detects_structural_issues():
     synthesis = SynthesisResult(
         answer="这是零风险收益，建议贷款投资。",
         used_tool_call_ids=[],
@@ -131,11 +135,27 @@ def test_deterministic_guard_should_detect_unsafe_text():
     )
 
     flags = deterministic_output_flags(
-        synthesis
+        synthesis,
+        loop_result=loop_result(),
     )
 
-    assert "guaranteed_return" in flags
-    assert "leverage_encouragement" in flags
+    # 语义安全（承诺收益/诱导杠杆）交由 LLM Guard 判断，
+    # 确定性检查不得用关键词误杀否定句。
+    assert "guaranteed_return" not in flags
+    assert "leverage_encouragement" not in flags
+
+    bad = SynthesisResult(
+        answer="回答内容。",
+        used_tool_call_ids=["bad_call"],
+        used_citation_ids=[],
+        uncertainty=None,
+        disclaimer_required=False,
+    )
+    bad_flags = deterministic_output_flags(
+        bad,
+        loop_result=loop_result(),
+    )
+    assert "invalid_used_tool_call_ids" in bad_flags
 
 
 @pytest.mark.anyio
@@ -161,21 +181,18 @@ async def test_deterministic_issue_should_request_rewrite():
         llm_client=FakeClient([])
     )
 
-    # <think> 标签已经由 SynthesisResult 在更前面拦截。
-    # 这里专门验证 Output Guard 对金融风险表述的检查。
+    # 结构化问题（思考标签泄露）由确定性检查直接拦截，
+    # 不依赖第二个模型。
     result = await guard.guard(
         request(
-            "紧急备用金稳赚，建议贷款投资。"
+            "回答内容。",
+            used_tool_call_ids=["bad_call"],
         )
     )
 
     assert result.result.verdict == "rewrite"
 
-    assert "guaranteed_return" in (
-        result.result.risk_flags
-    )
-
-    assert "leverage_encouragement" in (
+    assert "invalid_used_tool_call_ids" in (
         result.result.risk_flags
     )
 

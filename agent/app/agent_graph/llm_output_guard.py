@@ -30,14 +30,6 @@ _FORBIDDEN_PATTERNS = {
         r"<\s*/?\s*think\b",
         re.IGNORECASE,
     ),
-    "guaranteed_return": re.compile(
-        r"稳赚|必赚|必涨|保证收益|保本高收益|零风险收益",
-        re.IGNORECASE,
-    ),
-    "leverage_encouragement": re.compile(
-        r"借款投资|贷款投资|套现投资|加杠杆投资",
-        re.IGNORECASE,
-    ),
 }
 
 
@@ -476,17 +468,9 @@ def _deterministic_rewrite_instructions(
             "只能使用系统提供的 citation_id。"
         )
 
-    if any(
-        flag in flags
-        for flag in (
-            "hidden_reasoning",
-            "guaranteed_return",
-            "leverage_encouragement",
-        )
-    ):
+    if "hidden_reasoning" in flags:
         instructions.append(
-            "删除思考标签、收益保证、"
-            "借款投资或其他不安全表述。"
+            "删除思考标签，不要输出 <think> 等隐藏推理内容。"
         )
 
     if not instructions:
