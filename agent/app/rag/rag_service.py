@@ -149,33 +149,62 @@ class RagAnswerService:
                 },
             )
 
-        fast_assessment = self._fast_path_assessment(
-            retrieved_chunks
+        document_scope_fallback = any(
+            str(chunk.metadata.get("retrieval_mode", ""))
+            == "document_scope_positional_fallback"
+            for chunk in retrieved_chunks
         )
-        if fast_assessment is not None:
-            assessment = fast_assessment
-            assessment_usage = {
-                "fast_path": True,
-                "min_score": self._float_setting(
-                    "rag_fast_path_min_score",
-                    90.0,
+        if document_scope_fallback:
+            # 用户指定了文档范围且已按位置返回原文：
+            # 文档内容本身就是“这个文档讲了什么”类问题的答案，直接视为充分。
+            assessment = RagEvidenceAssessment(
+                sufficient=True,
+                confidence="high",
+                reason=(
+                    "用户指定了文档范围，已按文档位置返回原文作为证据。"
                 ),
-            }
-            logger.info(
-                "rag_evidence_fast_path",
-                query=query,
-                top_score=float(
-                    max(
-                        (chunk.score or 0.0)
-                        for chunk in retrieved_chunks
+                relevant_evidence_numbers=list(
+                    range(
+                        1,
+                        min(len(retrieved_chunks), 3) + 1,
                     )
                 ),
+                missing_info=[],
             )
+            assessment_usage = {
+                "fast_path": True,
+                "document_scope_fallback": True,
+            }
         else:
-            assessment, assessment_usage = await self._assess_evidence(
-                query=query,
-                retrieved_chunks=retrieved_chunks,
+            fast_assessment = self._fast_path_assessment(
+                retrieved_chunks
             )
+            if fast_assessment is None:
+                assessment, assessment_usage = (
+                    await self._assess_evidence(
+                        query=query,
+                        retrieved_chunks=retrieved_chunks,
+                    )
+                )
+            else:
+                assessment = fast_assessment
+                assessment_usage = {
+                    "fast_path": True,
+                    "min_score": self._float_setting(
+                        "rag_fast_path_min_score",
+                        90.0,
+                    ),
+                }
+                logger.info(
+                    "rag_evidence_fast_path",
+                    query=query,
+                    top_score=float(
+                        max(
+                            (chunk.score or 0.0)
+                            for chunk in retrieved_chunks
+                        )
+                    ),
+                )
 
         if not assessment.sufficient:
             return RagAnswerResult(
