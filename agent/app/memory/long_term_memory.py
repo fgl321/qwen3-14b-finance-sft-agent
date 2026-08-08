@@ -39,6 +39,9 @@ DEFAULT_FACT_WHITELIST: dict[str, frozenset[str]] = {
     ),
     "family_profile": frozenset(
         {
+            "name",
+            "education",
+            "major",
             "age",
             "husband_age",
             "wife_age",
