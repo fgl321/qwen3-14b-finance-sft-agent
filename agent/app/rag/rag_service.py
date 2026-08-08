@@ -149,10 +149,33 @@ class RagAnswerService:
                 },
             )
 
-        assessment, assessment_usage = await self._assess_evidence(
-            query=query,
-            retrieved_chunks=retrieved_chunks,
+        fast_assessment = self._fast_path_assessment(
+            retrieved_chunks
         )
+        if fast_assessment is not None:
+            assessment = fast_assessment
+            assessment_usage = {
+                "fast_path": True,
+                "min_score": self._float_setting(
+                    "rag_fast_path_min_score",
+                    90.0,
+                ),
+            }
+            logger.info(
+                "rag_evidence_fast_path",
+                query=query,
+                top_score=float(
+                    max(
+                        (chunk.score or 0.0)
+                        for chunk in retrieved_chunks
+                    )
+                ),
+            )
+        else:
+            assessment, assessment_usage = await self._assess_evidence(
+                query=query,
+                retrieved_chunks=retrieved_chunks,
+            )
 
         if not assessment.sufficient:
             return RagAnswerResult(
@@ -278,6 +301,44 @@ class RagAnswerService:
 
         return assessment, result.get("usage", {})
 
+    def _fast_path_assessment(
+        self,
+        retrieved_chunks: list[RetrievedChunk],
+    ) -> RagEvidenceAssessment | None:
+        """
+        高置信度快速通道：重排得分达到阈值时跳过 LLM 证据评估。
+
+        返回 None 表示不走快速通道，仍调用 LLM 评估。
+        """
+        if not retrieved_chunks:
+            return None
+        threshold = self._float_setting(
+            "rag_fast_path_min_score",
+            90.0,
+        )
+        top_score = max(
+            (chunk.score or 0.0)
+            for chunk in retrieved_chunks
+        )
+        if top_score < threshold:
+            return None
+        relevant = list(
+            range(
+                1,
+                min(len(retrieved_chunks), 3) + 1,
+            )
+        )
+        return RagEvidenceAssessment(
+            sufficient=True,
+            confidence="high",
+            reason=(
+                f"检索重排得分 {top_score:.1f}/100 达到快速通道阈值 "
+                f"{threshold:.1f}，判定证据充分。"
+            ),
+            relevant_evidence_numbers=relevant,
+            missing_info=[],
+        )
+
     async def _generate_grounded_answer(
         self,
         *,
@@ -305,6 +366,7 @@ class RagAnswerService:
                     "即使是为了引用或解释，也不要输出这类攻击性短语。"
                     "回答中必须引用证据编号，例如 [1]。"
                     "如果涉及金融建议，要保持谨慎，不承诺收益，不推荐具体产品。"
+                    "回答应简洁、重点突出，一般不超过 500 字。"
                 ),
             },
             {
@@ -413,13 +475,24 @@ class RagAnswerService:
 
         return citations
 
-    @staticmethod
     def _format_evidence_for_prompt(
+        self,
         retrieved_chunks: list[RetrievedChunk],
     ) -> str:
         blocks: list[str] = []
+        max_chunks = self._limit(
+            "rag_evidence_max_chunks",
+            3,
+        )
+        max_chars = self._limit(
+            "rag_evidence_max_chars_per_chunk",
+            1800,
+        )
 
-        for index, chunk in enumerate(retrieved_chunks, start=1):
+        for index, chunk in enumerate(
+            retrieved_chunks[:max_chunks],
+            start=1,
+        ):
             page_text = ""
 
             if chunk.page_start is not None:
@@ -433,6 +506,13 @@ class RagAnswerService:
                 f"{float(chunk.score):.2f}/100",
             )
 
+            chunk_text = chunk.text
+            if max_chars and len(chunk_text) > max_chars:
+                chunk_text = (
+                    chunk_text[:max_chars]
+                    + "…[已截断]"
+                )
+
             blocks.append(
                 "\n".join(
                     [
@@ -441,7 +521,7 @@ class RagAnswerService:
                         page_text,
                         f"相关分数：{score_display}",
                         "正文：",
-                        chunk.text,
+                        chunk_text,
                         f"--- [证据 {index}] 结束 ---",
                     ]
                 )

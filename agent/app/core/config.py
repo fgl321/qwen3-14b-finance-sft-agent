@@ -108,6 +108,16 @@ class Settings(BaseSettings):
     rag_parent_limit: int = 4
     # 对外展示分数（0~100）低于该阈值的证据会被过滤，0 表示不过滤。
     rag_min_score: float = 0.0
+    # 高置信度快速通道：重排得分达到该阈值时，
+    # 跳过 LLM 证据评估，直接判定证据充分（省一次模型调用）。
+    rag_fast_path_min_score: float = 90.0
+
+    # 生成/评估提示词中的证据裁剪，缩短解码注意力长度。
+    rag_evidence_max_chunks: int = 3
+    rag_evidence_max_chars_per_chunk: int = 1800
+
+    # RAG 直接答案的 Redis 缓存 TTL（秒）。
+    rag_answer_cache_ttl_seconds: int = 300
 
     # Rerank
     # 默认开启；模型加载失败时会自动降级为不重排，不影响主链路。

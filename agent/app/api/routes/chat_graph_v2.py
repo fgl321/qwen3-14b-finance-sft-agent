@@ -23,6 +23,7 @@ from app.agent_graph.runtime.request_idempotency import (
 )
 from app.core.logging import get_logger
 from app.llm.synthesis_proxy import (
+    current_synthesis_provider,
     reset_synthesis_provider,
     set_synthesis_provider,
 )
@@ -207,6 +208,47 @@ def _build_rag_direct_result(
     }
 
 
+def _rag_answer_redis(request: Request) -> Any | None:
+    """返回用于 RAG 答案缓存的 Redis 客户端，不可用时返回 None。"""
+    short_memory = _get_short_memory(request)
+    redis = getattr(short_memory, "redis", None)
+    return redis if redis is not None else None
+
+
+def _rag_kb_fingerprint(request: Request) -> int:
+    """知识库指纹：任意文档增删都会改变，用于缓存失效。"""
+    store = getattr(request.app.state, "rag_store", None)
+    if store is None:
+        return 0
+    try:
+        return int(store.count_points())
+    except Exception:
+        return 0
+
+
+def _rag_answer_cache_key(
+    *,
+    payload: ProductionChatRequest,
+    retrieval_query: str,
+    provider: str,
+    kb_fingerprint: int,
+) -> str:
+    raw = "|".join(
+        [
+            payload.tenant_id,
+            payload.user_id,
+            payload.knowledge_base_id,
+            ",".join(sorted(payload.document_ids)),
+            payload.user_message,
+            retrieval_query,
+            provider,
+            str(kb_fingerprint),
+        ]
+    )
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    return f"rag_answer:{digest}"
+
+
 async def _run_rag_attempt(
     *,
     payload: ProductionChatRequest,
@@ -277,11 +319,13 @@ async def _run_rag_attempt(
 
     try:
         settings = getattr(request.app.state, "settings", None)
+        retrieval_query = payload.user_message
+        # 多轮查询改写只在存在真实对话上下文时启用：
+        # 首问没有历史，直接使用原始问题，避免每次检索都多一次 LLM 调用。
         rewrite_enabled = bool(
             getattr(settings, "rag_query_rewrite_enabled", False)
         )
-        retrieval_query = payload.user_message
-        if rewrite_enabled:
+        if rewrite_enabled and len(history_messages or []) >= 2:
             rewriter = QueryRewriter(
                 llm_client=getattr(
                     request.app.state, "deepseek", None
@@ -301,6 +345,54 @@ async def _run_rag_attempt(
                 history_messages=history_messages,
             )
 
+        cache = _rag_answer_redis(request)
+        cache_key: str | None = None
+        cached_rag: dict[str, Any] | None = None
+        if cache is not None:
+            cache_key = _rag_answer_cache_key(
+                payload=payload,
+                retrieval_query=retrieval_query,
+                provider=current_synthesis_provider(),
+                kb_fingerprint=_rag_kb_fingerprint(request),
+            )
+            try:
+                cached_raw = cache.get(cache_key)
+            except Exception:
+                cached_raw = None
+            if cached_raw:
+                try:
+                    cached_rag = json.loads(cached_raw)
+                except Exception:
+                    cached_rag = None
+
+        if cached_rag is not None:
+            rag = dict(cached_rag)
+            sufficient = _rag_sufficient(rag)
+            audit.update(
+                {
+                    "attempted": True,
+                    "sufficient": sufficient,
+                    "replayed": False,
+                    "cache_hit": True,
+                    "retrieved_count": int(
+                        rag.get("retrieved_count") or 0
+                    ),
+                    "citation_count": len(rag.get("citations") or []),
+                }
+            )
+            if sufficient or payload.rag_mode == "required":
+                return (
+                    _build_rag_direct_result(
+                        payload=payload,
+                        request_id=request_id,
+                        rag=rag,
+                        run_id=f"rag-run-{uuid4()}",
+                        replayed=False,
+                    ),
+                    audit,
+                )
+            return None, audit
+
         raw = await rag_service.answer(
             query=payload.user_message,
             retrieval_query=retrieval_query,
@@ -312,6 +404,22 @@ async def _run_rag_attempt(
         rag = _serialize_model(raw)
         if not isinstance(rag, dict):
             raise TypeError("RAG 服务返回值必须可序列化为对象。")
+        if cache is not None and cache_key:
+            try:
+                cache.setex(
+                    cache_key,
+                    int(
+                        getattr(
+                            settings,
+                            "rag_answer_cache_ttl_seconds",
+                            300,
+                        )
+                        or 300
+                    ),
+                    json.dumps(rag, ensure_ascii=False),
+                )
+            except Exception:
+                pass
         sufficient = _rag_sufficient(rag)
         run_id = f"rag-run-{uuid4()}" if (
             sufficient or payload.rag_mode == "required"
