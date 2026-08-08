@@ -499,8 +499,8 @@ class QdrantRagStore:
 
         return result
 
-    @staticmethod
     def _build_retrieval_debug(
+        self,
         *,
         fused_hit: dict[str, Any],
     ) -> dict[str, Any]:
