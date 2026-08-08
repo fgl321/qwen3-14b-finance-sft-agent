@@ -156,7 +156,35 @@ def _parse_image(path: Path) -> str:
 
     return ocr_text_from_bytes(path.read_bytes())
 
-def _parse_docx(path: Path) -> str:
+def _extract_docx_image_text(document: Any) -> list[str]:
+    """提取 docx 内嵌图片并 OCR，返回识别文本（失败返回空列表）。"""
+    from app.rag.ocr import ocr_text_from_bytes
+
+    texts: list[str] = []
+    try:
+        rels = document.part.rels
+    except Exception:
+        return texts
+    for rel in rels.values():
+        try:
+            target_ref = str(getattr(rel, "target_ref", "") or "").lower()
+            if not target_ref.endswith(
+                (".png", ".jpg", ".jpeg", ".gif", ".bmp")
+            ):
+                continue
+            target_part = getattr(rel, "target_part", None)
+            if target_part is None:
+                continue
+            data = bytes(target_part.blob)
+            text = ocr_text_from_bytes(data)
+            if text.strip():
+                texts.append(f"[图片内容]\n{text}")
+        except Exception:
+            continue
+    return texts
+
+
+def _parse_docx(path: Path, *, ocr_enabled: bool = True) -> str:
     try:
         from docx import Document
     except ImportError as exc:  # pragma: no cover - 依赖环境
@@ -168,6 +196,8 @@ def _parse_docx(path: Path) -> str:
     for table in document.tables:
         for row in table.rows:
             blocks.append(" | ".join(cell.text for cell in row.cells))
+    if ocr_enabled:
+        blocks.extend(_extract_docx_image_text(document))
     return "\n".join(blocks)
 
 
@@ -192,7 +222,7 @@ def parse_document(path: str | Path) -> str:
     elif suffix in {".png", ".jpg", ".jpeg"}:
         text = _parse_image(file_path)
     elif suffix == ".docx":
-        text = _parse_docx(file_path)
+        text = _parse_docx(file_path, ocr_enabled=True)
     else:  # pragma: no cover
         raise ValueError(f"不支持的文档类型：{suffix}")
 
@@ -346,6 +376,12 @@ def _parse_document_with_pages(
                 "图片中没有识别到文字。"
             )
         metadata["source_type"] = "image"
+        return text, [ParsedPage(page_number=1, text=text)], metadata
+
+    if suffix == ".docx":
+        text = _parse_docx(path, ocr_enabled=ocr_enabled)
+        if not text.strip():
+            raise ValueError("文档没有可提取的文本内容。")
         return text, [ParsedPage(page_number=1, text=text)], metadata
 
     text = parse_document(path)

@@ -93,6 +93,7 @@ class RagAnswerService:
         parent_limit: int = 4,
         retrieval_query: str | None = None,
         document_ids: list[str] | None = None,
+        relevance_gate: float | None = None,
     ) -> RagAnswerResult:
         child_limit = self._limit("rag_child_limit", child_limit)
         parent_limit = self._limit("rag_parent_limit", parent_limit)
@@ -154,6 +155,9 @@ class RagAnswerService:
             == "document_scope_positional_fallback"
             for chunk in retrieved_chunks
         )
+        top_probability = self._top_rerank_probability(
+            retrieved_chunks
+        )
         if document_scope_fallback:
             # 用户指定了文档范围且已按位置返回原文：
             # 文档内容本身就是“这个文档讲了什么”类问题的答案，直接视为充分。
@@ -175,9 +179,39 @@ class RagAnswerService:
                 "fast_path": True,
                 "document_scope_fallback": True,
             }
+        elif (
+            relevance_gate is not None
+            and top_probability is not None
+            and top_probability < relevance_gate
+        ):
+            # auto 模式相关性门槛：证据与问题无关时，
+            # 不进入知识库直接回答，回落到 Agent 正常回答。
+            assessment = RagEvidenceAssessment(
+                sufficient=False,
+                confidence="high",
+                reason=(
+                    f"检索证据与问题相关性过低"
+                    f"（重排概率 {top_probability:.3f} < "
+                    f"{relevance_gate}）。"
+                ),
+                relevant_evidence_numbers=[],
+                missing_info=["检索到的证据与用户问题不相关。"],
+            )
+            assessment_usage = {
+                "relevance_gate_rejected": True,
+                "top_rerank_probability": top_probability,
+                "gate": relevance_gate,
+            }
+            logger.info(
+                "rag_evidence_relevance_gate_rejected",
+                query=query,
+                top_rerank_probability=top_probability,
+                gate=relevance_gate,
+            )
         else:
             fast_assessment = self._fast_path_assessment(
-                retrieved_chunks
+                retrieved_chunks,
+                top_probability=top_probability,
             )
             if fast_assessment is None:
                 assessment, assessment_usage = (
@@ -190,20 +224,15 @@ class RagAnswerService:
                 assessment = fast_assessment
                 assessment_usage = {
                     "fast_path": True,
-                    "min_score": self._float_setting(
+                    "min_probability": self._float_setting(
                         "rag_fast_path_min_score",
-                        90.0,
+                        0.9,
                     ),
                 }
                 logger.info(
                     "rag_evidence_fast_path",
                     query=query,
-                    top_score=float(
-                        max(
-                            (chunk.score or 0.0)
-                            for chunk in retrieved_chunks
-                        )
-                    ),
+                    top_rerank_probability=top_probability,
                 )
 
         if not assessment.sufficient:
@@ -333,23 +362,26 @@ class RagAnswerService:
     def _fast_path_assessment(
         self,
         retrieved_chunks: list[RetrievedChunk],
+        *,
+        top_probability: float | None = None,
     ) -> RagEvidenceAssessment | None:
         """
-        高置信度快速通道：重排得分达到阈值时跳过 LLM 证据评估。
+        高置信度快速通道：重排概率达到阈值时跳过 LLM 证据评估。
 
         返回 None 表示不走快速通道，仍调用 LLM 评估。
         """
-        if not retrieved_chunks:
+        probability = top_probability
+        if probability is None:
+            probability = self._top_rerank_probability(
+                retrieved_chunks
+            )
+        if probability is None:
             return None
         threshold = self._float_setting(
             "rag_fast_path_min_score",
-            90.0,
+            0.9,
         )
-        top_score = max(
-            (chunk.score or 0.0)
-            for chunk in retrieved_chunks
-        )
-        if top_score < threshold:
+        if probability < threshold:
             return None
         relevant = list(
             range(
@@ -361,12 +393,26 @@ class RagAnswerService:
             sufficient=True,
             confidence="high",
             reason=(
-                f"检索重排得分 {top_score:.1f}/100 达到快速通道阈值 "
-                f"{threshold:.1f}，判定证据充分。"
+                f"检索重排概率 {probability:.3f} 达到快速通道阈值 "
+                f"{threshold}，判定证据充分。"
             ),
             relevant_evidence_numbers=relevant,
             missing_info=[],
         )
+
+    @staticmethod
+    def _top_rerank_probability(
+        retrieved_chunks: list[RetrievedChunk],
+    ) -> float | None:
+        """取重排概率的最大值；没有重排信息时返回 None。"""
+        probabilities = [
+            float(chunk.metadata.get("rerank_probability"))
+            for chunk in retrieved_chunks
+            if chunk.metadata.get("rerank_probability") is not None
+        ]
+        if not probabilities:
+            return None
+        return max(probabilities)
 
     async def _generate_grounded_answer(
         self,

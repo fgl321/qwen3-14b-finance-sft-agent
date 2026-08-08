@@ -108,9 +108,13 @@ class Settings(BaseSettings):
     rag_parent_limit: int = 4
     # 对外展示分数（0~100）低于该阈值的证据会被过滤，0 表示不过滤。
     rag_min_score: float = 0.0
-    # 高置信度快速通道：重排得分达到该阈值时，
+    # 高置信度快速通道：重排概率（sigmoid 后的 0~1）达到该阈值时，
     # 跳过 LLM 证据评估，直接判定证据充分（省一次模型调用）。
-    rag_fast_path_min_score: float = 90.0
+    rag_fast_path_min_score: float = 0.9
+
+    # auto 模式相关性门槛：重排概率低于该值视为证据与问题无关，
+    # 不进入知识库直接回答，回落到 Agent 正常回答。
+    rag_auto_min_rerank_score: float = 0.5
 
     # 生成/评估提示词中的证据裁剪，缩短解码注意力长度。
     rag_evidence_max_chunks: int = 3

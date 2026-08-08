@@ -400,6 +400,18 @@ async def _run_rag_attempt(
             owner_user_id=payload.user_id,
             knowledge_base_id=payload.knowledge_base_id,
             document_ids=payload.document_ids,
+            relevance_gate=(
+                float(
+                    getattr(
+                        settings,
+                        "rag_auto_min_rerank_score",
+                        0.5,
+                    )
+                    or 0.5
+                )
+                if payload.rag_mode != "required"
+                else None
+            ),
         )
         rag = _serialize_model(raw)
         if not isinstance(rag, dict):

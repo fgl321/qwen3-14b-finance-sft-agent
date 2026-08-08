@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import Any, Protocol
 
 from app.core.logging import get_logger
@@ -137,6 +138,11 @@ class BgeReranker:
         metadata = dict(chunk.metadata or {})
         metadata["rerank_model"] = "bge-reranker-v2-m3"
         metadata["rerank_raw_score"] = round(raw_score, 6)
+        try:
+            probability = 1.0 / (1.0 + math.exp(-float(raw_score)))
+        except (OverflowError, ValueError):
+            probability = 0.0 if float(raw_score) < 0 else 1.0
+        metadata["rerank_probability"] = round(probability, 6)
 
         return chunk.model_copy(
             update={
