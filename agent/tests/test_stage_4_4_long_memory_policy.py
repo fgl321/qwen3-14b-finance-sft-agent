@@ -12,9 +12,25 @@ def test_long_memory_whitelist_accepts_finance_fact() -> None:
     )
 
 
-def test_long_memory_whitelist_rejects_unknown_fact() -> None:
+def test_long_memory_accepts_custom_non_sensitive_fact() -> None:
     service = LongTermMemoryService(
-        postgres_dsn="postgresql://unused", strict_whitelist=True
+        postgres_dsn="postgresql://unused"
+    )
+    # 白名单之外的自定义键现在允许保存（LLM 自主决定）。
+    service.validate_fact_key(
+        fact_type="family_profile", fact_key="name"
+    )
+    service.validate_fact_key(
+        fact_type="family_profile", fact_key="major"
+    )
+    service.validate_fact_key(
+        fact_type="personal", fact_key="hobby"
+    )
+
+
+def test_long_memory_rejects_sensitive_fact() -> None:
+    service = LongTermMemoryService(
+        postgres_dsn="postgresql://unused"
     )
     try:
         service.validate_fact_key(
@@ -23,7 +39,7 @@ def test_long_memory_whitelist_rejects_unknown_fact() -> None:
     except ValueError as exc:
         assert "不允许保存" in str(exc)
     else:
-        raise AssertionError("未知事实类型没有被拒绝。")
+        raise AssertionError("敏感事实没有被拒绝。")
 
 
 def test_long_memory_original_text_is_redacted() -> None:

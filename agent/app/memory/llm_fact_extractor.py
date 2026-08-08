@@ -33,7 +33,10 @@ _SYSTEM_PROMPT = """
 4. 用户明确说“更正、改为、现在是、不是……而是……”时，action=upsert，is_user_confirmed=true。
 5. 用户明确要求忘记某个白名单事实时，action=delete。
 6. 没有需要变更的长期事实时，也必须调用工具并返回 changes=[]。
-7. fact_type/fact_key 必须来自工具描述中的白名单。
+7. fact_type/fact_key 优先复用工具描述中建议的标准化名称；
+   没有合适名称时，可以使用简洁的自定义英文小写蛇形名称
+   （如 hobby、pet_name、work_schedule）；
+   系统会自动过滤身份证、银行卡、密码、电话、住址、医疗诊断等敏感字段。
 8. fact_value 必须包含实际值对象，例如 {"value": 25} 或
    {"value": "金融行业相关工作"}；不允许返回空对象 {}。
 """.strip()
@@ -63,7 +66,7 @@ class LLMFactExtractor:
         self.max_completion_tokens = max_completion_tokens
 
     def _tool_definition(self) -> dict[str, Any]:
-        allowed = {
+        suggested = {
             fact_type: sorted(keys)
             for fact_type, keys in self.memory_service.fact_whitelist.items()
         }
@@ -72,8 +75,9 @@ class LLMFactExtractor:
             "function": {
                 "name": _MEMORY_TOOL,
                 "description": (
-                    "提交长期记忆变更。白名单："
-                    + json.dumps(allowed, ensure_ascii=False)
+                    "提交长期记忆变更。建议优先使用以下标准化名称"
+                    "（没有合适名称时可自定义简洁的非敏感英文名称）："
+                    + json.dumps(suggested, ensure_ascii=False)
                 ),
                 "parameters": {
                     "type": "object",

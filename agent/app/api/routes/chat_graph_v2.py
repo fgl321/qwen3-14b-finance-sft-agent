@@ -458,14 +458,97 @@ def _merge_history(
     return merged[-max(max_messages, 2) :]
 
 
-def _long_memory_context(facts: list[Any]) -> str:
+_MEMORY_ALL_FACTS_LIMIT = 12
+_MEMORY_RANK_TOP_K = 8
+_MEMORY_RANK_LIMIT = 100
+
+
+def _fact_text(fact: Any) -> str:
+    value = getattr(fact, "fact_value", {}) or {}
+    if isinstance(value, dict) and "value" in value:
+        value = value["value"]
+    if isinstance(value, (dict, list)):
+        value = json.dumps(value, ensure_ascii=False)
+    return (
+        f"{getattr(fact, 'fact_type', '')}."
+        f"{getattr(fact, 'fact_key', '')}: {value}"
+    )
+
+
+def _cosine_similarity(a: list[float], b: list[float]) -> float:
+    if not a or not b or len(a) != len(b):
+        return 0.0
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = sum(x * x for x in a) ** 0.5
+    norm_b = sum(x * x for x in b) ** 0.5
+    if norm_a == 0.0 or norm_b == 0.0:
+        return 0.0
+    return dot / (norm_a * norm_b)
+
+
+async def _select_memory_facts(
+    facts: list[Any],
+    *,
+    query: str,
+    embedding_provider: Any,
+) -> list[Any]:
+    """
+    长期记忆的智能注入策略（参考 LangGraph 向量记忆）：
+    - 事实量少时全量注入，保证小规模场景行为稳定；
+    - 事实量多时，按当前问题的语义相关性排序，只注入 top-K，
+      避免无关记忆撑爆上下文。
+    """
+    total = list(facts)
+    if not total:
+        return []
+    if (
+        len(total) <= _MEMORY_ALL_FACTS_LIMIT
+        or not query.strip()
+        or embedding_provider is None
+    ):
+        return total[:_MEMORY_RANK_LIMIT]
+    try:
+        query_embedding = await asyncio.to_thread(
+            embedding_provider.embed_query,
+            query,
+        )
+        candidates = total[:_MEMORY_RANK_LIMIT]
+        texts = [_fact_text(fact) for fact in candidates]
+        embeddings = await asyncio.to_thread(
+            embedding_provider.embed_documents,
+            texts,
+        )
+        scored = sorted(
+            (
+                (_cosine_similarity(query_embedding.dense, embedding.dense), fact)
+                for embedding, fact in zip(embeddings, candidates)
+            ),
+            key=lambda item: -item[0],
+        )
+        return [fact for _, fact in scored[:_MEMORY_RANK_TOP_K]]
+    except Exception:
+        # 嵌入服务不可用时降级为全量注入，保证记忆功能不中断。
+        return total[:_MEMORY_RANK_LIMIT]
+
+
+async def _long_memory_context(
+    facts: list[Any],
+    *,
+    query: str = "",
+    embedding_provider: Any = None,
+) -> str:
     if not facts:
         return ""
+    selected = await _select_memory_facts(
+        facts,
+        query=query,
+        embedding_provider=embedding_provider,
+    )
     lines = [
         "以下是用户已明确提供并允许长期保存的事实。回答时可使用，"
         "但不得推测未记录内容："
     ]
-    for fact in facts[:50]:
+    for fact in selected:
         value = getattr(fact, "fact_value", {})
         lines.append(
             f"- {getattr(fact, 'fact_type', '')}."
@@ -651,7 +734,15 @@ async def production_chat_graph(
                     tenant_id=payload.tenant_id,
                 )
                 memory_audit["long_memory_loaded"] = len(facts)
-                long_context = _long_memory_context(facts)
+                long_context = await _long_memory_context(
+                    facts,
+                    query=payload.user_message,
+                    embedding_provider=getattr(
+                        request.app.state,
+                        "embedding_provider",
+                        None,
+                    ),
+                )
             except Exception as exc:
                 memory_audit["degraded"].append(
                     {"stage": "long_memory_read", "error": type(exc).__name__}

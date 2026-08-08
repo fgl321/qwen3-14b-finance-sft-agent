@@ -72,6 +72,53 @@ DEFAULT_FACT_WHITELIST: dict[str, frozenset[str]] = {
     ),
 }
 
+# 长期记忆的硬性安全边界：这些类型/键禁止保存。
+# 除此之外，事实类型与键由抽取模型按需自由定义，
+# 不再使用“必须来自枚举白名单”的刚性限制。
+FACT_BLOCK_MARKERS: frozenset[str] = frozenset(
+    {
+        "password",
+        "passwd",
+        "pwd",
+        "secret",
+        "token",
+        "api_key",
+        "apikey",
+        "authorization",
+        "cookie",
+        "session",
+        "private_key",
+        "验证码",
+        "密码",
+        "密钥",
+        "令牌",
+        "id_card",
+        "idcard",
+        "身份证",
+        "证件",
+        "bank_card",
+        "银行卡",
+        "卡号",
+        "account_no",
+        "account_number",
+        "mobile",
+        "phone",
+        "电话",
+        "手机",
+        "住址",
+        "address",
+        "医疗",
+        "diagnosis",
+        "病历",
+    }
+)
+
+
+def is_blocked_fact(fact_type: str, fact_key: str) -> bool:
+    """判断事实是否命中敏感字段安全边界。"""
+    text = f"{str(fact_type).strip()}.{str(fact_key).strip()}".lower()
+    return any(marker in text for marker in FACT_BLOCK_MARKERS)
+
 
 @dataclass(slots=True)
 class LongTermFact:
@@ -183,12 +230,13 @@ class LongTermMemoryService:
             raise ValueError("fact_type 不能为空。")
         if not clean_key:
             raise ValueError("fact_key 不能为空。")
-        allowed = self.fact_whitelist.get(clean_type)
-        if self.strict_whitelist and (
-            allowed is None or ("*" not in allowed and clean_key not in allowed)
-        ):
+        if len(clean_type) > 32:
+            raise ValueError("fact_type 长度不能超过 32。")
+        if len(clean_key) > 64:
+            raise ValueError("fact_key 长度不能超过 64。")
+        if is_blocked_fact(clean_type, clean_key):
             raise ValueError(
-                f"长期记忆不允许保存事实 {clean_type}.{clean_key}。"
+                f"长期记忆不允许保存敏感事实 {clean_type}.{clean_key}。"
             )
 
     @staticmethod
