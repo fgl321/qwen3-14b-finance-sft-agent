@@ -379,7 +379,7 @@ class HttpEmbeddingProvider(EmbeddingProvider):
         *,
         base_url: str,
         timeout: float = 60.0,
-        max_batch: int = 64,
+        max_batch: int = 128,
     ) -> None:
         import httpx
 

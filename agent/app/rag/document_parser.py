@@ -61,16 +61,65 @@ def _parse_csv(path: Path) -> str:
     return "\n".join(rows)
 
 
-def _parse_pdf(path: Path) -> str:
-    try:
-        from pypdf import PdfReader
-    except ImportError as exc:  # pragma: no cover - 依赖环境
-        raise RuntimeError(
-            "解析 PDF 需要 pypdf：python -m pip install pypdf"
-        ) from exc
-    reader = PdfReader(str(path))
-    return "\n\n".join((page.extract_text() or "") for page in reader.pages)
+def _extract_pdf_pages(
+    path: Path,
+) -> tuple[list[tuple[int, str]], int]:
+    """
+    逐页提取 PDF 文本。
 
+    优先使用 PyMuPDF（fitz，C 实现，速度快且更抗坏页），
+    回退到 pypdf；单页提取异常不会中断整份文档。
+    返回 ([(page_number, text), ...], total_pages)。
+    """
+    total_pages = 0
+    pages: list[tuple[int, str]] = []
+
+    try:
+        import fitz  # PyMuPDF
+    except ImportError:
+        fitz = None
+
+    if fitz is not None:
+        try:
+            document = fitz.open(str(path))
+            try:
+                total_pages = len(document)
+                for index in range(total_pages):
+                    try:
+                        raw = document[index].get_text() or ""
+                    except Exception:
+                        raw = ""
+                    text = normalize_document_text(raw)
+                    if text:
+                        pages.append((index + 1, text))
+            finally:
+                document.close()
+        except Exception:
+            # PyMuPDF 打开失败时回退到 pypdf。
+            pages = []
+            total_pages = 0
+
+    if pages or total_pages:
+        return pages, total_pages
+
+    from pypdf import PdfReader
+
+    reader = PdfReader(str(path))
+    total_pages = len(reader.pages)
+    for index, page in enumerate(reader.pages, start=1):
+        try:
+            raw = page.extract_text() or ""
+        except Exception:
+            raw = ""
+        text = normalize_document_text(raw)
+        if text:
+            pages.append((index, text))
+    return pages, total_pages
+
+
+def _parse_pdf(path: Path) -> str:
+    pages, _ = _extract_pdf_pages(path)
+    return "\n\n".join(text for _, text in pages)
 
 def _parse_docx(path: Path) -> str:
     try:
@@ -206,18 +255,46 @@ def _pages_from_path(path: Path, normalized_text: str) -> list[ParsedPage]:
     if suffix != ".pdf":
         return [ParsedPage(page_number=1, text=normalized_text)]
 
-    try:
-        from pypdf import PdfReader
-
-        reader = PdfReader(str(path))
-        pages: list[ParsedPage] = []
-        for index, page in enumerate(reader.pages, start=1):
-            text = normalize_document_text(page.extract_text() or "")
-            if text:
-                pages.append(ParsedPage(page_number=index, text=text))
-        return pages or [ParsedPage(page_number=1, text=normalized_text)]
-    except Exception:
+    extracted, _ = _extract_pdf_pages(path)
+    if not extracted:
         return [ParsedPage(page_number=1, text=normalized_text)]
+    return [
+        ParsedPage(page_number=page_number, text=text)
+        for page_number, text in extracted
+    ]
+
+
+def _parse_document_with_pages(
+    path: Path,
+) -> tuple[str, list[ParsedPage], dict[str, Any]]:
+    """
+    单次读取文档，返回 (全文, 页面列表, 元信息)。
+
+    对 PDF 只读取一次（PyMuPDF/pypdf），避免旧实现重复解析两次；
+    元信息中包含 total_pages 与 extracted_pages，便于上报
+    因纯图片/无法提取而被跳过的页数。
+    """
+    suffix = path.suffix.lower()
+    metadata: dict[str, Any] = {"source_path": str(path)}
+
+    if suffix == ".pdf":
+        extracted, total_pages = _extract_pdf_pages(path)
+        if not extracted:
+            raise ValueError(
+                "文档没有可提取的文本内容"
+                "（纯图片/扫描件 PDF 暂不支持 OCR）。"
+            )
+        metadata["total_pages"] = total_pages
+        metadata["extracted_pages"] = len(extracted)
+        text = "\n\n".join(page_text for _, page_text in extracted)
+        pages = [
+            ParsedPage(page_number=page_number, text=page_text)
+            for page_number, page_text in extracted
+        ]
+        return text, pages, metadata
+
+    text = parse_document(path)
+    return text, [ParsedPage(page_number=1, text=text)], metadata
 
 
 class DocumentParser:
@@ -314,16 +391,15 @@ class DocumentParser:
 
         assert path is not None
         try:
-            text = parse_document(path)
+            text, pages, metadata = _parse_document_with_pages(path)
             display_name = file_name or path.name
             source_type = path.suffix.lower().lstrip(".") or "text"
-            pages = _pages_from_path(path, text)
             return ParsedDocument(
                 text,
                 file_name=display_name,
                 source_type=source_type,
                 pages=pages,
-                metadata={"source_path": str(path)},
+                metadata=metadata,
             )
         finally:
             if cleanup_path is not None:

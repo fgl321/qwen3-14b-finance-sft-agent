@@ -88,7 +88,7 @@ async def embed(request: EmbedRequest) -> dict[str, Any]:
     with _inference_lock:
         output = _embed_model.encode(
             request.texts,
-            batch_size=32,
+            batch_size=64,
             max_length=1024,
             return_dense=True,
             return_sparse=True,

@@ -127,6 +127,20 @@ class RagIngestionService:
             ],
         )
 
+        parsed_meta = (
+            getattr(legacy_parsed, "metadata", None) or {}
+        )
+        total_pages = int(
+            parsed_meta.get("total_pages") or 0
+        )
+        extracted_pages = int(
+            parsed_meta.get("extracted_pages") or len(parsed.pages or [])
+        )
+        skipped_image_pages = max(
+            total_pages - extracted_pages,
+            0,
+        )
+
         logger.info(
             "rag_document_parsed",
             document_id=parsed.meta.document_id,
@@ -195,6 +209,11 @@ class RagIngestionService:
                 "total_chunks": len(chunks),
                 "parent_count": counter.get("parent", 0),
                 "child_count": counter.get("child", 0),
+            },
+            "page_stats": {
+                "total_pages": total_pages,
+                "extracted_pages": extracted_pages,
+                "skipped_image_pages": skipped_image_pages,
             },
             "qdrant": qdrant_result,
             "point_count_after_ingest": point_count,

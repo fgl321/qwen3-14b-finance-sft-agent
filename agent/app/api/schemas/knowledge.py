@@ -21,12 +21,19 @@ class ChunkStatsPayload(BaseModel):
     child_count: int
 
 
+class PageStatsPayload(BaseModel):
+    total_pages: int = 0
+    extracted_pages: int = 0
+    skipped_image_pages: int = 0
+
+
 class DocumentIngestResponse(BaseModel):
     ok: bool
     document: DocumentMetaPayload
     chunks: ChunkStatsPayload
-    qdrant: dict
-    point_count_after_ingest: int
+    page_stats: PageStatsPayload | None = None
+    qdrant: dict | None = None
+    point_count_after_ingest: int | None = None
 
 
 class KnowledgeDocumentPayload(BaseModel):
