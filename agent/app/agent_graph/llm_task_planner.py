@@ -647,79 +647,21 @@ def build_tool_feedback_message(
 
 
 def _extract_json_object(text: str) -> dict[str, Any]:
-    stripped = text.strip()
-
-    if not stripped:
-        raise PlannerProtocolError(
-            "模型没有返回工具调用或结构化内容。"
-        )
-
-    if stripped.startswith("```"):
-        lines = stripped.splitlines()
-
-        if lines:
-            lines = lines[1:]
-
-        if lines and lines[-1].strip() == "```":
-            lines = lines[:-1]
-
-        stripped = "\n".join(lines).strip()
-
-    start_index = stripped.find("{")
-    end_index = stripped.rfind("}")
-
-    if start_index < 0 or end_index < start_index:
-        raise PlannerProtocolError(
-            "模型文本中没有找到合法 JSON 对象。"
-        )
-
-    raw_json = stripped[start_index : end_index + 1]
+    from app.core.json_utils import extract_json_object
 
     try:
-        payload = json.loads(raw_json)
-    except json.JSONDecodeError as exc:
-        raise PlannerProtocolError(
-            "模型文本中的 JSON 无法解析。"
-        ) from exc
-
-    if not isinstance(payload, dict):
-        raise PlannerProtocolError(
-            "Planner JSON 顶层必须是对象。"
-        )
-
-    return payload
+        return extract_json_object(text)
+    except (TypeError, ValueError) as exc:
+        raise PlannerProtocolError(str(exc)) from exc
 
 
 def _parse_arguments(raw_arguments: Any) -> dict[str, Any]:
-    if raw_arguments is None:
-        return {}
-
-    if isinstance(raw_arguments, dict):
-        return raw_arguments
-
-    if not isinstance(raw_arguments, str):
-        raise PlannerProtocolError(
-            "function.arguments 必须是 JSON 字符串或对象。"
-        )
-
-    stripped = raw_arguments.strip()
-
-    if not stripped:
-        return {}
+    from app.core.json_utils import parse_arguments
 
     try:
-        payload = json.loads(stripped)
-    except json.JSONDecodeError as exc:
-        raise PlannerProtocolError(
-            "function.arguments 不是合法 JSON。"
-        ) from exc
-
-    if not isinstance(payload, dict):
-        raise PlannerProtocolError(
-            "function.arguments 顶层必须是对象。"
-        )
-
-    return payload
+        return parse_arguments(raw_arguments)
+    except (TypeError, ValueError) as exc:
+        raise PlannerProtocolError(str(exc)) from exc
 
 
 def _normalize_tool_call(

@@ -1,6 +1,4 @@
-import { useEffect, useRef, useState } from "react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
+import { useState, useEffect } from "react";
 import {
   chat,
   clearLongTermMemory,
@@ -14,14 +12,13 @@ import {
   saveConversations,
   uploadDocument,
   type ChatResponse,
-  type Citation,
   type Conversation,
   type DocumentItem,
   type Message,
 } from "./api";
-
-const GREETING =
-  "你好，我是基于 Qwen3-14B SFT 的金融助手。可以问我金融概念、家庭财务计算，也可以上传文档后基于知识库提问。";
+import ConversationList from "./components/ConversationList";
+import ChatPanel from "./components/ChatPanel";
+import KnowledgePanel from "./components/KnowledgePanel";
 
 export default function App() {
   const [messages, setMessages] = useState<Message[]>([]);
@@ -38,7 +35,6 @@ export default function App() {
   const [documents, setDocuments] = useState<DocumentItem[]>([]);
   const [status, setStatus] = useState("正在检查服务…");
   const [raw, setRaw] = useState("");
-  const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     health().then((h) => {
@@ -49,10 +45,6 @@ export default function App() {
     refreshDocuments();
     initConversations();
   }, []);
-
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
 
   async function refreshDocuments() {
     try {
@@ -97,12 +89,7 @@ export default function App() {
   function commitActive(messages: Message[], title?: string) {
     const next = conversations.map((conv) =>
       conv.thread_id === activeThreadId
-        ? {
-            ...conv,
-            title: title ?? conv.title,
-            updated_at: Date.now(),
-            messages,
-          }
+        ? { ...conv, title: title ?? conv.title, updated_at: Date.now(), messages }
         : conv,
     );
     setConversations(next);
@@ -267,13 +254,7 @@ export default function App() {
   }
 
   async function handleClearMemory() {
-    if (
-      !window.confirm(
-        "清除本用户的全部长期记忆？此操作不影响各会话的短期记忆。",
-      )
-    ) {
-      return;
-    }
+    if (!window.confirm("清除本用户的全部长期记忆？此操作不影响各会话的短期记忆。")) return;
     try {
       const deleted = await clearLongTermMemory();
       window.alert(`已清除 ${deleted} 条长期记忆。`);
@@ -297,150 +278,40 @@ export default function App() {
       </header>
 
       <section className="layout">
-        <aside className="conv card">
-          <div className="conv-head">
-            <h2>会话</h2>
-            <button className="link" onClick={createConversation} title="开启新的短期会话，长期记忆保留">
-              ＋ 新建对话
-            </button>
-          </div>
-          <ul className="conv-list">
-            {conversations.map((conv) => (
-              <li
-                key={conv.thread_id}
-                className={`conv-item${conv.thread_id === activeThreadId ? " active" : ""}`}
-                onClick={() => switchConversation(conv.thread_id)}
-                title={conv.title}
-              >
-                <span className="conv-title">{conv.title}</span>
-                <span className="conv-meta">
-                  {new Date(conv.updated_at).toLocaleString("zh-CN", {
-                    month: "2-digit",
-                    day: "2-digit",
-                    hour: "2-digit",
-                    minute: "2-digit",
-                  })}
-                </span>
-                <button
-                  className="link conv-delete"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    deleteConversation(conv.thread_id);
-                  }}
-                >
-                  删除
-                </button>
-              </li>
-            ))}
-            {conversations.length === 0 && <li className="empty">暂无会话</li>}
-          </ul>
-        </aside>
+        <ConversationList
+          conversations={conversations}
+          activeThreadId={activeThreadId}
+          onCreate={createConversation}
+          onSwitch={switchConversation}
+          onDelete={deleteConversation}
+        />
 
-        <div className="chat card">
-          <div className="messages">
-            {messages.length === 0 && !busy && (
-              <div className="message assistant">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                  {GREETING}
-                </ReactMarkdown>
-              </div>
-            )}
-            {messages.map((message, index) => (
-              <div key={index} className={`message ${message.role}${message.error ? " error" : ""}`}>
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                  {message.content}
-                </ReactMarkdown>
-                {message.citations && message.citations.length > 0 && (
-                  <div className="citations">
-                    <span className="label">引用来源</span>
-                    {message.citations.map((citation) => (
-                      <span key={citation.citation_id} className="citation">
-                        [{citation.citation_id}] {citation.file_name}
-                        {citation.page_start ? ` · 第 ${citation.page_start} 页` : ""}
-                        <em>{citation.score.toFixed(1)} 分</em>
-                      </span>
-                    ))}
-                  </div>
-                )}
-                {message.meta && <div className="meta">{message.meta}</div>}
-              </div>
-            ))}
-            {busy && <div className="message assistant">正在分析…</div>}
-            <div ref={bottomRef} />
-          </div>
-          <div className="controls">
-            <label className="toggle">
-              <input type="checkbox" checked={enableRag} onChange={(e) => setEnableRag(e.target.checked)} />
-              RAG
-            </label>
-            <select value={ragMode} onChange={(e) => setRagMode(e.target.value as "off" | "auto" | "required")} disabled={!enableRag}>
-              <option value="auto">自动</option>
-              <option value="required">必须知识库</option>
-              <option value="off">关闭</option>
-            </select>
-            <select value={synthesisProvider} onChange={(e) => setSynthesisProvider(e.target.value as "qwen" | "deepseek")}>
-              <option value="qwen">蒸馏 Qwen3-14B</option>
-              <option value="deepseek">DeepSeek API</option>
-            </select>
-            <select value={currentDocumentId} onChange={(e) => setCurrentDocumentId(e.target.value)}>
-              <option value="">全部文档</option>
-              {documents.map((doc) => (
-                <option key={doc.document_id} value={doc.document_id}>
-                  {doc.file_name || doc.document_id}
-                </option>
-              ))}
-            </select>
-            <textarea
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.ctrlKey && e.key === "Enter") submit();
-              }}
-              placeholder="输入金融问题，Ctrl+Enter 发送"
-            />
-            <button onClick={submit} disabled={busy || !input.trim()}>发送</button>
-          </div>
-        </div>
+        <ChatPanel
+          messages={messages}
+          busy={busy}
+          input={input}
+          enableRag={enableRag}
+          ragMode={ragMode}
+          synthesisProvider={synthesisProvider}
+          currentDocumentId={currentDocumentId}
+          documents={documents}
+          onInputChange={setInput}
+          onSubmit={submit}
+          onEnableRagChange={setEnableRag}
+          onRagModeChange={setRagMode}
+          onSynthesisProviderChange={setSynthesisProvider}
+          onDocumentChange={setCurrentDocumentId}
+        />
 
-        <aside className="side card">
-          <h2>知识库</h2>
-          <label className="upload">
-            <input
-              type="file"
-              accept=".txt,.md,.markdown,.json,.jsonl,.csv,.pdf,.docx,.png,.jpg,.jpeg"
-              disabled={uploading}
-              onChange={(e) => {
-                const file = e.target.files?.[0];
-                if (file) handleUpload(file);
-                e.target.value = "";
-              }}
-            />
-            上传文档
-          </label>
-          {uploadMessage && <p className="hint">{uploadMessage}</p>}
-          <ul className="docs">
-            {documents.map((doc) => (
-              <li key={doc.document_id}>
-                <span className="doc-name">{doc.file_name || doc.document_id}</span>
-                <span className="doc-meta">
-                  {doc.total_chunks ?? 0} 块 · {doc.ingested_at ? doc.ingested_at.slice(0, 10) : ""}
-                </span>
-                <button className="link" onClick={() => handleDelete(doc)}>删除</button>
-              </li>
-            ))}
-            {documents.length === 0 && <li className="empty">暂无文档</li>}
-          </ul>
-          <details>
-            <summary>最近一次原始响应</summary>
-            <pre>{raw || "暂无"}</pre>
-          </details>
-          <p className="hint" style={{ marginTop: 12 }}>
-            <button className="link" onClick={handleClearMemory}>
-              清除长期记忆
-            </button>
-            （跨会话共享，删除会话不影响长期记忆）
-          </p>
-        </aside>
+        <KnowledgePanel
+          documents={documents}
+          uploading={uploading}
+          uploadMessage={uploadMessage}
+          raw={raw}
+          onUpload={handleUpload}
+          onDelete={handleDelete}
+          onClearMemory={handleClearMemory}
+        />
       </section>
     </main>
   );

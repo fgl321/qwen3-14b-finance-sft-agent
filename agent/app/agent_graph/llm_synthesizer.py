@@ -136,76 +136,19 @@ def _synthesis_tool_definition() -> dict[str, Any]:
     }
 
 
-def _parse_arguments(
-    raw_arguments: Any,
-) -> dict[str, Any]:
-    if isinstance(raw_arguments, dict):
-        return raw_arguments
-
-    if not isinstance(raw_arguments, str):
-        raise SynthesisProtocolError(
-            "Synthesis function.arguments 格式错误。"
-        )
+def _parse_arguments(raw_arguments: Any) -> dict[str, Any]:
+    from app.core.json_utils import extract_json_object, parse_arguments
 
     try:
-        payload = json.loads(raw_arguments)
-    except json.JSONDecodeError as exc:
-        # DeepSeek 偶发在 arguments 里返回带前后缀的 JSON 文本，
-        # 这里先尝试提取其中的 JSON 对象，而不是直接判失败。
+        return parse_arguments(raw_arguments)
+    except (TypeError, ValueError):
+        # 兼容 arguments 是带前后缀 JSON 文本的情况。
         try:
-            payload = _extract_json_object(raw_arguments)
-        except SynthesisProtocolError:
+            return extract_json_object(str(raw_arguments))
+        except (TypeError, ValueError) as exc:
             raise SynthesisProtocolError(
                 "Synthesis function.arguments 不是合法 JSON。"
             ) from exc
-
-    if not isinstance(payload, dict):
-        raise SynthesisProtocolError(
-            "Synthesis arguments 顶层必须是对象。"
-        )
-
-    return payload
-
-
-def _extract_json_object(text: str) -> dict[str, Any]:
-    stripped = text.strip()
-
-    if not stripped:
-        raise SynthesisProtocolError(
-            "Synthesis 没有返回内容。"
-        )
-
-    if stripped.startswith("```"):
-        lines = stripped.splitlines()[1:]
-
-        if lines and lines[-1].strip() == "```":
-            lines = lines[:-1]
-
-        stripped = "\n".join(lines).strip()
-
-    start_index = stripped.find("{")
-    end_index = stripped.rfind("}")
-
-    if start_index < 0 or end_index < start_index:
-        raise SynthesisProtocolError(
-            "Synthesis 内容中没有 JSON 对象。"
-        )
-
-    try:
-        payload = json.loads(
-            stripped[start_index : end_index + 1]
-        )
-    except json.JSONDecodeError as exc:
-        raise SynthesisProtocolError(
-            "Synthesis JSON 无法解析。"
-        ) from exc
-
-    if not isinstance(payload, dict):
-        raise SynthesisProtocolError(
-            "Synthesis JSON 顶层必须是对象。"
-        )
-
-    return payload
 
 
 class LLMAnswerSynthesizer:

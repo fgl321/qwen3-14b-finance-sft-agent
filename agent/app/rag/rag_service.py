@@ -18,9 +18,14 @@ from app.rag.rag_types import (
 logger = get_logger(__name__)
 
 # RAG 直答路径不经过 FinalResponsePipeline 的输出守卫，
-# 这里用确定性安全网兜底：命中已知注入载荷时改写回答，不原样复述。
+# 用确定性安全网兜底：命中已知注入载荷时改写回答，不原样复述。
+# 主路径的安全语义判断由 LLM Output Guard 负责，这里仅做快速兜底。
 _INJECTION_PAYLOAD_MARKERS = (
     "已被攻击",
+    "忽略之前的指令",
+    "忽略以上指令",
+    "ignore previous instructions",
+    "ignore all previous",
 )
 
 _SAFE_INJECTION_RESPONSE = (
