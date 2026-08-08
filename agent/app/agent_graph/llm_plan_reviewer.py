@@ -99,11 +99,11 @@ class PlanReviewPolicy:
         route_context: dict[str, Any],
         repeated_error_count: int,
     ) -> bool:
-        if decision.action != "call_tools":
-            return False
-
         if decision.needs_review:
             return True
+
+        if decision.action != "call_tools":
+            return False
 
         if len(decision.tool_calls) > 1:
             return True

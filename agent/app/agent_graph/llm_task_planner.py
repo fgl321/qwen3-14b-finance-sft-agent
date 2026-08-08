@@ -135,6 +135,20 @@ class PlannerProtocolError(ValueError):
     pass
 
 
+class PlannerPlainTextRecovery(ValueError):
+    """
+    模型没有使用工具调用协议，而是返回了普通正文。
+
+    对闲聊/概念类问题，直接按“直接回答”恢复，不再整轮降级；
+    恢复后的决策会标记 needs_review=True，由评审器复核，
+    避免把本应调用工具的计算题错误地当成直接回答。
+    """
+
+    def __init__(self, content: str) -> None:
+        super().__init__("模型返回普通正文，未使用 Planner 工具协议。")
+        self.content = str(content)
+
+
 class PlannerDecisionConsistencyError(
     PlannerProtocolError
 ):
@@ -1119,6 +1133,60 @@ class LLMTaskPlanner:
                     last_protocol_error_type = (
                         type(exc).__name__
                     )
+                except PlannerPlainTextRecovery as exc:
+                    recovered = PlannerDecision(
+                        action="respond",
+                        tool_calls=[],
+                        decision_reason=(
+                            "模型未使用工具协议，"
+                            "已按直接回答恢复并交由复核。"
+                        ),
+                        confidence="medium",
+                        needs_review=True,
+                        plan_version=request.agent_round,
+                    )
+                    try:
+                        _validate_decision_consistency(
+                            decision=recovered,
+                            available_business_tool_names=(
+                                available_business_tool_names
+                                or frozenset()
+                            ),
+                        )
+                    except PlannerDecisionConsistencyError:
+                        recovered = PlannerDecision(
+                            action="fallback",
+                            tool_calls=[],
+                            decision_reason=(
+                                "恢复后的直接回答未通过一致性校验。"
+                            ),
+                            confidence="low",
+                            needs_review=False,
+                            plan_version=request.agent_round,
+                        )
+                    logger.info(
+                        "llm_task_planner_plain_text_recovery",
+                        request_id=request.request_id,
+                        run_id=request.run_id,
+                        agent_round=request.agent_round,
+                        attempt=attempt_index,
+                        text_length=len(exc.content),
+                    )
+                    return PlannerInvocationResult(
+                        decision=recovered,
+                        assistant_message=assistant_message,
+                        model=result.get("model"),
+                        finish_reason=result.get(
+                            "finish_reason",
+                            "",
+                        ),
+                        usage=result.get("usage") or {},
+                        attempts=attempt_index,
+                        protocol_repaired=True,
+                        raw_tool_call_names=(
+                            last_raw_tool_call_names
+                        ),
+                    )
                 except ValidationError as exc:
                     last_protocol_error = (
                         "Planner 结构化字段校验失败："
@@ -1341,10 +1409,7 @@ class LLMTaskPlanner:
                     )
                 )
             except Exception as exc:
-                raise PlannerProtocolError(
-                    "模型返回了普通正文或无效 JSON，"
-                    "没有使用规定的 Planner 工具调用协议。"
-                ) from exc
+                raise PlannerPlainTextRecovery(content) from exc
 
             _validate_decision_consistency(
                 decision=content_decision,

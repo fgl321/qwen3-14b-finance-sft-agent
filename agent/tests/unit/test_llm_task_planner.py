@@ -354,7 +354,7 @@ async def test_mixed_control_and_business_should_repair():
 
 
 @pytest.mark.anyio
-async def test_plain_content_should_fail_closed():
+async def test_plain_content_should_recover_as_respond():
     client = FakeDeepSeekClient(
         [
             build_result(
@@ -371,8 +371,10 @@ async def test_plain_content_should_fail_closed():
 
     result = await planner.plan(build_request())
 
-    assert result.decision.action == "fallback"
-    assert result.decision.confidence == "low"
+    assert result.decision.action == "respond"
+    assert result.decision.tool_calls == []
+    assert result.decision.needs_review is True
+    assert result.protocol_repaired is True
 
     # Planner 文本不能直接作为最终回答。
     assert (

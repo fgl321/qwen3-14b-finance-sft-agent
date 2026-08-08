@@ -139,6 +139,25 @@ def test_policy_should_review_multi_tool_plan():
     ) is True
 
 
+def test_policy_should_review_flagged_respond_decision():
+    registry = build_production_tool_registry()
+    policy = PlanReviewPolicy(registry=registry)
+    decision = PlannerDecision(
+        action="respond",
+        tool_calls=[],
+        decision_reason="模型未使用工具协议，已恢复为直接回答。",
+        confidence="medium",
+        needs_review=True,
+        plan_version=1,
+    )
+
+    assert policy.should_review(
+        decision=decision,
+        route_context={},
+        repeated_error_count=0,
+    ) is True
+
+
 @pytest.mark.anyio
 async def test_should_parse_approve():
     client = FakeDeepSeekClient(
