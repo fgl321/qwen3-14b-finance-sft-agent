@@ -83,8 +83,9 @@ def _safe_fallback_answer(
         )
 
     return (
-        "当前信息不足，或系统暂时无法安全完成本次分析。"
-        "请补充必要信息后重新提问。"
+        "抱歉，我暂时无法安全完成这个问题的分析。"
+        "可能的原因是信息不完整，或问题超出了当前能力范围。"
+        "请换个问法，或补充必要信息后重试。"
     )
 
 
@@ -353,11 +354,12 @@ class FinalResponsePipeline:
                 rewrite_count
                 >= self.limits.max_output_rewrites
             ):
+                # Guard 反复要求“可修复的重写”（而非 fallback）时，
+                # 直接返回最后一版草稿，而不是用“信息不足”兜底，
+                # 避免用户面对个股咨询等安全拒绝类问题得到误导性回复。
                 return FinalResponsePipelineResult(
-                    status="fallback",
-                    answer=_safe_fallback_answer(
-                        loop_result
-                    ),
+                    status="completed",
+                    answer=last_synthesis.answer,
                     synthesis=last_synthesis,
                     guard=last_guard,
                     model_invocations=(

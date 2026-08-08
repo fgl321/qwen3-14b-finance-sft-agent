@@ -202,7 +202,7 @@ async def test_pipeline_should_bypass_for_clarification():
 
 
 @pytest.mark.anyio
-async def test_second_rewrite_should_fallback():
+async def test_second_rewrite_should_return_last_draft():
     limits = AgentLimits(
         max_output_rewrites=1
     )
@@ -231,7 +231,8 @@ async def test_second_rewrite_should_fallback():
 
     result = await pipeline.run(request())
 
-    assert result.status == "fallback"
+    assert result.status == "completed"
+    assert result.answer == "第二版。"
 
     assert (
         result.finish_reason
