@@ -4,7 +4,7 @@ from app.personal_data.privacy import sanitize_personal_value
 
 def test_long_memory_whitelist_accepts_finance_fact() -> None:
     service = LongTermMemoryService(
-        postgres_dsn="postgresql://unused", strict_whitelist=True
+        postgres_dsn="postgresql://unused"
     )
     service.validate_fact_key(
         fact_type="family_finance",

@@ -3,6 +3,8 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass, field
 
+from app.core.logging import get_logger
+
 from app.agent_graph.llm_output_guard import (
     LLMOutputGuard,
     OutputGuardRequest,
@@ -29,6 +31,8 @@ _STANDARD_DISCLAIMER = (
     "以上内容用于一般性金融知识与规划参考，"
     "不构成具体投资、保险或交易建议。"
 )
+
+logger = get_logger(__name__)
 
 
 @dataclass(slots=True)

@@ -59,9 +59,11 @@ async def chat(
             limit=settings.short_memory_max_messages,
         )
 
-    memory_policy = LongTermMemoryPolicy()
+    memory_policy = LongTermMemoryPolicy(
+        llm_client=llm_client,
+    )
 
-    long_memory_result = memory_policy.process_user_message(
+    long_memory_result = await memory_policy.process_user_message(
         user_message=request_body.message,
         user_id=request_body.user_id,
         tenant_id=tenant_id,

@@ -187,7 +187,6 @@ class LongTermMemoryService:
         *,
         settings: Any | None = None,
         fact_whitelist: dict[str, frozenset[str]] | None = None,
-        strict_whitelist: bool = True,
     ) -> None:
         if settings is None and postgres_dsn is None:
             try:
@@ -202,7 +201,6 @@ class LongTermMemoryService:
             "postgresql://agent:agent@127.0.0.1:5432/agent",
         )
         self.fact_whitelist = fact_whitelist or DEFAULT_FACT_WHITELIST
-        self.strict_whitelist = strict_whitelist
 
     def _connect(self):
         try:

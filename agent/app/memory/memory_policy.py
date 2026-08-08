@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from app.memory.long_term_fact_extractor import LongTermFactExtractor
+from app.memory.llm_fact_extractor import LLMFactExtractor
 from app.memory.long_term_memory import LongTermMemoryService
 
 
@@ -29,14 +29,13 @@ class LongTermMemoryPolicy:
     """
     长期记忆策略层。
 
-    注意：
     LongTermMemoryService 只负责数据库读写。
-    LongTermFactExtractor 只负责从文本抽取事实。
-    LongTermMemoryPolicy 负责把二者组合成“业务策略”。
+    LLMFactExtractor 负责通过 LLM 从文本抽取/删除事实。
+    LongTermMemoryPolicy 负责把二者组合成业务策略。
 
     当前策略：
-    1. 每轮消息先规则抽取长期稳定事实。
-    2. 抽到事实就 upsert 写入 PostgreSQL。
+    1. 每轮消息通过 LLM 抽取长期稳定事实。
+    2. upsert 写入 PostgreSQL，delete 删除指定事实。
     3. 再读取该用户全部长期记忆，格式化后注入给 Agent。
     4. 出错时不影响主对话，只把错误写入 usage.long_memory.error。
     """
@@ -44,13 +43,17 @@ class LongTermMemoryPolicy:
     def __init__(
         self,
         *,
-        extractor: LongTermFactExtractor | None = None,
+        llm_client: Any,
+        extractor: LLMFactExtractor | None = None,
         memory_service: LongTermMemoryService | None = None,
     ) -> None:
-        self.extractor = extractor or LongTermFactExtractor()
         self.memory_service = memory_service or LongTermMemoryService()
+        self.extractor = extractor or LLMFactExtractor(
+            llm_client=llm_client,
+            memory_service=self.memory_service,
+        )
 
-    def process_user_message(
+    async def process_user_message(
         self,
         *,
         user_message: str,
@@ -61,18 +64,30 @@ class LongTermMemoryPolicy:
         try:
             self.memory_service.init_schema()
 
-            extracted_facts = self.extractor.extract(user_message)
+            changes = await self.extractor.extract(
+                user_message=user_message,
+            )
 
             saved_facts: list[dict[str, Any]] = []
 
-            for fact in extracted_facts:
+            for change in changes:
+                if change.action == "delete":
+                    self.memory_service.delete_fact(
+                        user_id=user_id,
+                        tenant_id=tenant_id,
+                        fact_type=change.fact_type,
+                        fact_key=change.fact_key,
+                        change_reason=change.change_reason,
+                    )
+                    continue
+
                 saved_fact = self.memory_service.upsert_fact(
                     user_id=user_id,
                     tenant_id=tenant_id,
-                    fact_type=fact.fact_type,
-                    fact_key=fact.fact_key,
-                    fact_value=fact.fact_value,
-                    confidence=fact.confidence,
+                    fact_type=change.fact_type,
+                    fact_key=change.fact_key,
+                    fact_value=change.fact_value,
+                    confidence=change.confidence,
                     source_thread_id=thread_id,
                 )
 
