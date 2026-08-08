@@ -60,7 +60,7 @@ class QdrantRagStore:
 
         self.client = QdrantClient(
             url=self.settings.qdrant_url,
-            timeout=60,
+            timeout=int(self.settings.qdrant_timeout),
             prefer_grpc=False,
         )
 
@@ -178,9 +178,9 @@ class QdrantRagStore:
         fused_hits = self._fuse_child_hits(
             dense_hits=dense_hits,
             sparse_hits=sparse_hits,
-            dense_weight=0.65,
-            sparse_weight=0.35,
-            rrf_k=60,
+            dense_weight=self.settings.rag_fusion_dense_weight,
+            sparse_weight=self.settings.rag_fusion_sparse_weight,
+            rrf_k=self.settings.rag_fusion_rrf_k,
         )
 
         logger.info(
@@ -515,9 +515,9 @@ class QdrantRagStore:
             "dense_rank": fused_hit.get("dense_rank"),
             "sparse_rank": fused_hit.get("sparse_rank"),
             "fusion_method": "weighted_rrf",
-            "dense_weight": 0.65,
-            "sparse_weight": 0.35,
-            "rrf_k": 60,
+            "dense_weight": self.settings.rag_fusion_dense_weight,
+            "sparse_weight": self.settings.rag_fusion_sparse_weight,
+            "rrf_k": self.settings.rag_fusion_rrf_k,
         }
 
     def list_documents(

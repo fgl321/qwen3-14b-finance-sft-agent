@@ -29,6 +29,13 @@ class Settings(BaseSettings):
     app_env: str = "development"
     app_host: str = "127.0.0.1"
     app_port: int = 8002
+    app_version: str = "0.2.0"
+    cors_origins: list[str] = [
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ]
 
     # =========================
     # HTTP / Proxy
@@ -56,6 +63,7 @@ class Settings(BaseSettings):
     deepseek_http2: bool = True
     deepseek_max_connections: int = 100
     deepseek_max_keepalive_connections: int = 20
+    deepseek_keepalive_expiry: float = 30.0
 
     # Qwen3-14B distilled model: final answer generation only.
     qwen_api_key: str = "local-qwen"
@@ -63,6 +71,8 @@ class Settings(BaseSettings):
     qwen_model: str = "qwen3-14b-bf16-finance-sft"
     qwen_connect_timeout: float = 15.0
     qwen_read_timeout: float = 180.0
+    qwen_write_timeout: float = 30.0
+    qwen_pool_timeout: float = 30.0
     qwen_max_retries: int = 2
 
     # 最终回答生成模型：qwen=本地蒸馏模型，deepseek=DeepSeek API。
@@ -95,6 +105,7 @@ class Settings(BaseSettings):
     # =========================
     qdrant_url: str = "http://127.0.0.1:6333"
     qdrant_collection: str = "finance_knowledge"
+    qdrant_timeout: float = 60.0
 
     # =========================
     # RAG Vector
@@ -106,6 +117,9 @@ class Settings(BaseSettings):
     # RAG 检索参数
     rag_child_limit: int = 8
     rag_parent_limit: int = 4
+    rag_fusion_dense_weight: float = 0.65
+    rag_fusion_sparse_weight: float = 0.35
+    rag_fusion_rrf_k: int = 60
     # 对外展示分数（0~100）低于该阈值的证据会被过滤，0 表示不过滤。
     rag_min_score: float = 0.0
     # 高置信度快速通道：重排概率（sigmoid 后的 0~1）达到该阈值时，
@@ -140,6 +154,14 @@ class Settings(BaseSettings):
     # 多轮查询改写
     rag_query_rewrite_enabled: bool = True
     rag_query_rewrite_max_tokens: int = 256
+
+    # =========================
+    # Production Agent Defaults
+    # =========================
+    production_default_tenant_id: str = "default"
+    production_default_kb_id: str = "kb_finance_basic"
+    production_default_capabilities: list[str] = ["financial_calculation"]
+    production_recursion_limit: int = 30
 
     # =========================
     # Embedding

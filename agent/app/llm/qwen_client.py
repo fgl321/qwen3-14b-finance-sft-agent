@@ -1,28 +1,13 @@
 from __future__ import annotations
 
 import json
-import re
 from typing import Any, Sequence
 
 import httpx
 from openai import AsyncOpenAI
 
 from app.core.config import Settings
-
-
-def _parse_json_object(text: str) -> dict[str, Any]:
-    cleaned = re.sub(r"^```(?:json)?\s*", "", text.strip(), flags=re.IGNORECASE)
-    cleaned = re.sub(r"\s*```$", "", cleaned)
-    try:
-        value = json.loads(cleaned)
-    except json.JSONDecodeError:
-        start, end = cleaned.find("{"), cleaned.rfind("}")
-        if start < 0 or end <= start:
-            raise ValueError("Qwen did not return a JSON object")
-        value = json.loads(cleaned[start:end + 1])
-    if not isinstance(value, dict):
-        raise ValueError("Qwen JSON response is not an object")
-    return value
+from app.core.json_utils import extract_json_object
 
 
 class QwenClient:
@@ -34,8 +19,8 @@ class QwenClient:
             timeout=httpx.Timeout(
                 connect=settings.qwen_connect_timeout,
                 read=settings.qwen_read_timeout,
-                write=30.0,
-                pool=30.0,
+                write=settings.qwen_write_timeout,
+                pool=settings.qwen_pool_timeout,
             ),
             trust_env=settings.http_trust_env,
         )
@@ -81,7 +66,7 @@ class QwenClient:
         choice = response.choices[0]
         message = choice.message.model_dump(exclude_none=True)
         if tool:
-            arguments = _parse_json_object(str(message.get("content") or ""))
+            arguments = extract_json_object(str(message.get("content") or ""))
             function = tool["function"]
             message = {
                 "role": "assistant",

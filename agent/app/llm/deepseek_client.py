@@ -47,14 +47,14 @@ class DeepSeekClient:
         timeout = httpx.Timeout(
             connect=settings.deepseek_connect_timeout,
             read=settings.deepseek_read_timeout,
-            write=30.0,
-            pool=10.0,
+            write=settings.deepseek_write_timeout,
+            pool=settings.deepseek_pool_timeout,
         )
 
         limits = httpx.Limits(
-            max_connections=100,
-            max_keepalive_connections=20,
-            keepalive_expiry=30.0,
+            max_connections=settings.deepseek_max_connections,
+            max_keepalive_connections=settings.deepseek_max_keepalive_connections,
+            keepalive_expiry=settings.deepseek_keepalive_expiry,
         )
 
         self._http_client = httpx.AsyncClient(

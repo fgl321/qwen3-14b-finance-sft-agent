@@ -41,6 +41,9 @@ from app.rag.rag_service import RagAnswerService
 setup_logging()
 logger = get_logger(__name__)
 
+# get_settings() 使用 lru_cache，安全在模块级别调用。
+settings = get_settings()
+
 
 @asynccontextmanager
 async def lifespan(
@@ -61,8 +64,6 @@ async def lifespan(
     1. 关闭 PostgreSQL Checkpointer。
     2. 关闭 DeepSeekClient。
     """
-
-    settings = get_settings()
 
     app.state.settings = settings
 
@@ -209,20 +210,15 @@ async def lifespan(
 
 
 app = FastAPI(
-    title="Qwen3-14B BF16 Finance Agent",
-    version="0.2.0",
+    title=settings.app_name,
+    version=settings.app_version,
     lifespan=lifespan,
 )
 
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-    ],
+    allow_origins=settings.cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -331,61 +327,38 @@ async def health() -> dict[str, str]:
 
     return {
         "status": "ok",
-        "service": (
-            "qwen3-14b-bf16-finance-agent"
-        ),
-        "version": "0.2.0",
+        "service": settings.app_name,
+        "version": settings.app_version,
     }
 
 
-@app.get("/health/deepseek")
-async def deepseek_health(
-    request: Request,
+async def _check_llm_health(
+    client: DeepSeekClient | QwenClient,
+    label: str,
 ) -> dict:
-    """
-    检查 DeepSeek API 是否可用。
-    """
-
-    client: DeepSeekClient = (
-        request.app.state.deepseek
-    )
-
+    """公共 LLM 健康检查，避免 deepseek/qwen 两个端点重复。"""
     result = await client.chat(
-        messages=[
-            {
-                "role": "user",
-                "content": "只回答 OK",
-            }
-        ],
-        thinking_enabled=False,
-        max_completion_tokens=32,
-    )
-
-    return {
-        "status": "ok",
-        "model": result["model"],
-        "answer": (
-            result["message"].get(
-                "content"
-            )
-        ),
-        "usage": result["usage"],
-    }
-
-
-@app.get("/health/qwen")
-async def qwen_health(request: Request) -> dict:
-    result = await request.app.state.qwen.chat(
         messages=[{"role": "user", "content": "只回答 OK"}],
         thinking_enabled=False,
         max_completion_tokens=32,
     )
     return {
         "status": "ok",
+        "service": label,
         "model": result["model"],
         "answer": result["message"].get("content"),
         "usage": result["usage"],
     }
+
+
+@app.get("/health/deepseek")
+async def deepseek_health(request: Request) -> dict:
+    return await _check_llm_health(request.app.state.deepseek, "deepseek")
+
+
+@app.get("/health/qwen")
+async def qwen_health(request: Request) -> dict:
+    return await _check_llm_health(request.app.state.qwen, "qwen")
 
 
 @app.get("/health/embedding")
