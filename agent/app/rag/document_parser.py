@@ -75,9 +75,12 @@ def _extract_pdf_pages(
     pages: list[tuple[int, str]] = []
 
     try:
-        import fitz  # PyMuPDF
+        import pymupdf as fitz  # PyMuPDF >= 1.24
     except ImportError:
-        fitz = None
+        try:
+            import fitz  # 旧版本包名
+        except ImportError:
+            fitz = None
 
     if fitz is not None:
         try:
