@@ -9,6 +9,13 @@ SUPPORTED_DOCUMENT_EXTENSIONS = {
     ".docx",
     ".txt",
     ".md",
+    ".markdown",
+    ".json",
+    ".jsonl",
+    ".csv",
+    ".png",
+    ".jpg",
+    ".jpeg",
 }
 
 
