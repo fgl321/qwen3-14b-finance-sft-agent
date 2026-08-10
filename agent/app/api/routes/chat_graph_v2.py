@@ -163,6 +163,37 @@ def _rag_sufficient(rag: dict[str, Any]) -> bool:
     return bool(assessment.get("sufficient"))
 
 
+def _rag_direct_execution_path(
+    rag: dict[str, Any],
+    payload: ProductionChatRequest,
+) -> str:
+    """细分 RAG 直接回答的来源路径。
+
+    - attachment_direct：用户明确指定文档（文档问答，即使来源是生成内容也允许）；
+    - kb_direct：知识库常规直接回答（权威证据充分）。
+    """
+    chunks = rag.get("retrieved_chunks") or []
+    positional_fallback = any(
+        str((chunk.get("metadata") or {}).get("retrieval_mode", ""))
+        == "document_scope_positional_fallback"
+        for chunk in chunks
+    )
+    if positional_fallback:
+        return "attachment_direct"
+    scoped_ids = {
+        str(document_id)
+        for document_id in (payload.document_ids or [])
+    }
+    if scoped_ids:
+        chunk_doc_ids = {
+            str(chunk.get("document_id") or "")
+            for chunk in chunks
+        }
+        if chunk_doc_ids and chunk_doc_ids <= scoped_ids:
+            return "attachment_direct"
+    return "kb_direct"
+
+
 def _build_rag_direct_result(
     *,
     payload: ProductionChatRequest,
@@ -194,7 +225,10 @@ def _build_rag_direct_result(
         # 表示本次请求由 Stage 4.4 RAG 快速路径完成。
         "graph_version": "stage_4_2_8f",
         "personal_data_version": PERSONAL_DATA_VERSION,
-        "execution_path": "rag_direct",
+        "execution_path": _rag_direct_execution_path(
+            rag,
+            payload,
+        ),
         "rag": rag,
         "idempotency": {
             "request_id": request_id,
@@ -940,6 +974,7 @@ async def production_chat_graph(
             allow_side_effects=payload.allow_side_effects,
             execution_policy=payload.execution_policy,
         )
+        result["execution_path"] = "agent_path"
         write_audit = await _save_memory_after_success(
             payload=payload,
             request=request,

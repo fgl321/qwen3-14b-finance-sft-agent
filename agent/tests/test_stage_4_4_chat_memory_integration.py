@@ -200,7 +200,7 @@ def test_sufficient_rag_bypasses_graph_and_keeps_citations() -> None:
         rag_mode="auto",
     )
     result = asyncio.run(production_chat_graph(payload, request))
-    assert result["execution_path"] == "rag_direct"
+    assert result["execution_path"] == "kb_direct"
     assert result["finish_reason"] == "rag_direct_answer"
     assert result["rag"]["citations"][0]["document_id"] == "doc-1"
     assert service.kwargs == {}
