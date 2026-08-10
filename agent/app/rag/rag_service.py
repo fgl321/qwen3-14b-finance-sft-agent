@@ -160,17 +160,31 @@ class RagAnswerService:
             == "document_scope_positional_fallback"
             for chunk in retrieved_chunks
         )
+        scoped_ids = {
+            str(document_id)
+            for document_id in (document_ids or [])
+        }
+        best_chunk = self._best_retrieved_chunk(
+            retrieved_chunks
+        )
+        attachment_scoped = (
+            best_chunk is not None
+            and str(best_chunk.document_id) in scoped_ids
+        )
         top_probability = self._top_rerank_probability(
             retrieved_chunks
         )
-        if document_scope_fallback:
+        if document_scope_fallback or attachment_scoped:
             # 用户指定了文档范围且已按位置返回原文：
             # 文档内容本身就是“这个文档讲了什么”类问题的答案，直接视为充分。
+            # 对明确指定的上传文档（attachment QA），同样确定性放行，
+            # 不依赖 LLM 评估的临场判断。
             assessment = RagEvidenceAssessment(
                 sufficient=True,
                 confidence="high",
                 reason=(
-                    "用户指定了文档范围，已按文档位置返回原文作为证据。"
+                    "用户明确指定了该文档，"
+                    "基于该文档内容直接回答（attachment QA）。"
                 ),
                 relevant_evidence_numbers=list(
                     range(
