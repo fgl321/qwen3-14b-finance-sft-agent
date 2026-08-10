@@ -304,19 +304,148 @@ class QdrantRagStore:
             )
 
             if not isinstance(reranker, NoopReranker):
-                candidates = retrieved[: max(rerank_candidate_limit, 1)]
-                reranked = reranker.rerank(
+                # 子块级重排：BGE-Reranker 输入窗口有限（约 512 token），
+                # 父块可能超出窗口，导致关键内容（如联系方式、数值结论）
+                # 在打分时被截断。这里用命中的子块文本计算重排分数，
+                # 再把最高子块分数映射回父块；最终仍返回完整父块作为证据。
+                child_candidates: list[RetrievedChunk] = []
+                child_parent_ids: list[str] = []
+                seen_child_ids: set[str] = set()
+
+                for fused_hit in fused_hits[: max(rerank_candidate_limit, 1)]:
+                    hit_payload = fused_hit.get("payload") or {}
+                    parent_id = hit_payload.get("parent_id")
+                    child_id = hit_payload.get("chunk_id")
+                    child_text = str(hit_payload.get("text") or "")
+
+                    if not parent_id or not child_id or not child_text:
+                        continue
+                    if str(child_id) in seen_child_ids:
+                        continue
+
+                    seen_child_ids.add(str(child_id))
+                    child_candidates.append(
+                        RetrievedChunk(
+                            chunk_id=str(child_id),
+                            document_id=str(
+                                hit_payload.get("document_id") or ""
+                            ),
+                            file_name=str(
+                                hit_payload.get("file_name") or ""
+                            ),
+                            text=child_text,
+                            score=0.0,
+                            metadata={
+                                "retrieval_mode": "hybrid_dense_sparse",
+                            },
+                        )
+                    )
+                    child_parent_ids.append(str(parent_id))
+
+                if not child_candidates:
+                    child_candidates = [
+                        chunk.model_copy(
+                            update={
+                                "metadata": {
+                                    **chunk.metadata,
+                                    "retrieval_mode": (
+                                        "hybrid_dense_sparse"
+                                    ),
+                                }
+                            }
+                        )
+                        for chunk in retrieved[
+                            : max(rerank_candidate_limit, 1)
+                        ]
+                    ]
+                    child_parent_ids = [
+                        str(chunk.chunk_id)
+                        for chunk in child_candidates
+                    ]
+
+                reranked_children = reranker.rerank(
                     query=query,
-                    candidates=candidates,
+                    candidates=child_candidates,
                 )
-                if reranked:
-                    normalized = BgeReranker.normalize_scores(reranked)
+
+                if reranked_children:
+                    best_prob_by_parent: dict[str, float] = {}
+                    best_meta_by_parent: dict[str, dict] = {}
+
+                    for child, parent_id in zip(
+                        reranked_children,
+                        child_parent_ids,
+                    ):
+                        meta = dict(child.metadata or {})
+                        probability = float(
+                            meta.get("rerank_probability") or -1.0
+                        )
+                        if (
+                            probability
+                            > best_prob_by_parent.get(
+                                parent_id,
+                                -1.0,
+                            )
+                        ):
+                            best_prob_by_parent[parent_id] = (
+                                probability
+                            )
+                            best_meta_by_parent[parent_id] = meta
+
+                    mapped: list[RetrievedChunk] = []
+                    for parent_chunk in retrieved[
+                        : max(rerank_candidate_limit, 1)
+                    ]:
+                        parent_key = str(parent_chunk.chunk_id)
+                        child_meta = best_meta_by_parent.get(
+                            parent_key
+                        )
+                        if child_meta is None:
+                            mapped.append(parent_chunk)
+                            continue
+                        mapped.append(
+                            parent_chunk.model_copy(
+                                update={
+                                    "metadata": {
+                                        **parent_chunk.metadata,
+                                        "rerank_probability": (
+                                            child_meta.get(
+                                                "rerank_probability"
+                                            )
+                                        ),
+                                        "rerank_raw_score": (
+                                            child_meta.get(
+                                                "rerank_raw_score"
+                                            )
+                                        ),
+                                        "rerank_model": child_meta.get(
+                                            "rerank_model"
+                                        ),
+                                        "rerank_input_type": "child",
+                                        "rerank_child_score_source": True,
+                                    }
+                                }
+                            )
+                        )
+
+                    mapped.sort(
+                        key=lambda item: float(
+                            (item.metadata or {}).get(
+                                "rerank_probability"
+                            )
+                            or -1.0
+                        ),
+                        reverse=True,
+                    )
+                    before_rerank = len(retrieved)
+                    normalized = BgeReranker.normalize_scores(mapped)
                     retrieved = normalized
                     logger.info(
                         "rag_rerank_applied",
                         query=query,
-                        before=len(candidates),
+                        before=before_rerank,
                         after=len(normalized),
+                        rerank_level="child",
                     )
 
         if min_score is not None and min_score > 0:
