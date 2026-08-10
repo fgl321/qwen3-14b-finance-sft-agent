@@ -87,6 +87,7 @@ class DeepSeekClient:
         max_completion_tokens: int = 2048,
         tools: list[dict[str, Any]] | None = None,
         response_format: dict[str, str] | None = None,
+        tool_choice: str | dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """
         调用 DeepSeek Chat Completions。
@@ -121,7 +122,9 @@ class DeepSeekClient:
 
         if tools is not None:
             request_body["tools"] = tools
-            request_body["tool_choice"] = "auto"
+            request_body["tool_choice"] = (
+                tool_choice or "auto"
+            )
 
         if response_format is not None:
             request_body["response_format"] = response_format

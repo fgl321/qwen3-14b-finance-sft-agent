@@ -25,6 +25,7 @@ class _SequencedPlannerClient:
         tools: list[dict[str, Any]] | None = None,
         thinking_enabled: bool = False,
         max_completion_tokens: int = 1024,
+        tool_choice: str | dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         self.calls.append(
             {
@@ -34,6 +35,7 @@ class _SequencedPlannerClient:
                 "max_completion_tokens": (
                     max_completion_tokens
                 ),
+                "tool_choice": tool_choice,
             }
         )
 
@@ -155,6 +157,22 @@ def _planner_response(
     }
 
 
+def _plain_text_response(content: str) -> dict[str, Any]:
+    return {
+        "message": {
+            "role": "assistant",
+            "content": content,
+            "tool_calls": None,
+        },
+        "model": "deepseek-test",
+        "finish_reason": "stop",
+        "usage": {
+            "prompt_tokens": 10,
+            "completion_tokens": 5,
+        },
+    }
+
+
 def _request() -> PlannerRequest:
     return PlannerRequest(
         request_id="req_test",
@@ -171,6 +189,99 @@ def _request() -> PlannerRequest:
         ),
         remaining_tool_calls=12,
     )
+
+
+def test_planner_forces_required_tool_choice() -> None:
+    client = _SequencedPlannerClient(
+        [
+            _planner_response(
+                tool_calls=[
+                    _tool_call(
+                        tool_name="planner_finish",
+                        arguments={
+                            "reason": "信息已经足够。",
+                            "confidence": "high",
+                            "needs_review": False,
+                        },
+                        tool_call_id="call_1",
+                    )
+                ]
+            )
+        ]
+    )
+    planner = LLMTaskPlanner(
+        llm_client=client,
+        registry=_FakeRegistry(),
+    )
+
+    result = asyncio.run(planner.plan(_request()))
+
+    assert result.decision.action == "respond"
+    assert result.protocol_repaired is False
+    assert client.calls[0]["tool_choice"] == "required"
+
+
+def test_plain_text_retries_and_accepts_protocol_response() -> None:
+    client = _SequencedPlannerClient(
+        [
+            _plain_text_response(
+                "这个问题不需要调用工具，可以直接回答。"
+            ),
+            _planner_response(
+                tool_calls=[
+                    _tool_call(
+                        tool_name="planner_finish",
+                        arguments={
+                            "reason": "信息已经足够。",
+                            "confidence": "high",
+                            "needs_review": False,
+                        },
+                        tool_call_id="call_2",
+                    )
+                ]
+            ),
+        ]
+    )
+    planner = LLMTaskPlanner(
+        llm_client=client,
+        registry=_FakeRegistry(),
+    )
+
+    result = asyncio.run(planner.plan(_request()))
+
+    assert len(client.calls) == 2
+    assert result.attempts == 2
+    assert result.protocol_repaired is True
+    assert result.decision.action == "respond"
+    assert result.decision.needs_review is False
+    # 第二次调用必须携带协议修复提示。
+    second_messages = client.calls[1]["messages"]
+    assert any(
+        "不符合规定的工具调用协议"
+        in str(message.get("content") or "")
+        for message in second_messages
+    )
+
+
+def test_plain_text_twice_recovers_with_review() -> None:
+    client = _SequencedPlannerClient(
+        [
+            _plain_text_response("不需要工具。"),
+            _plain_text_response("仍然不需要工具。"),
+        ]
+    )
+    planner = LLMTaskPlanner(
+        llm_client=client,
+        registry=_FakeRegistry(),
+    )
+
+    result = asyncio.run(planner.plan(_request()))
+
+    assert len(client.calls) == 2
+    assert result.attempts == 2
+    assert result.protocol_repaired is True
+    assert result.decision.action == "respond"
+    assert result.decision.needs_review is True
 
 
 def test_respond_with_tool_required_reason_should_trigger_repair() -> None:

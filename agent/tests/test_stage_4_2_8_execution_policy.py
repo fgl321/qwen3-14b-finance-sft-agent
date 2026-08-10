@@ -106,6 +106,7 @@ class _SingleResponseClient:
         tools: list[dict[str, Any]] | None = None,
         thinking_enabled: bool = False,
         max_completion_tokens: int = 1024,
+        tool_choice: str | dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         self.calls.append(
             {
@@ -115,6 +116,7 @@ class _SingleResponseClient:
                 "max_completion_tokens": (
                     max_completion_tokens
                 ),
+                "tool_choice": tool_choice,
             }
         )
         return self.response

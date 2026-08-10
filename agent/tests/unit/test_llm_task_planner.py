@@ -360,7 +360,11 @@ async def test_plain_content_should_recover_as_respond():
             build_result(
                 content="现有信息已经足够。",
                 finish_reason="stop",
-            )
+            ),
+            build_result(
+                content="仍然直接回答。",
+                finish_reason="stop",
+            ),
         ]
     )
 
@@ -375,12 +379,51 @@ async def test_plain_content_should_recover_as_respond():
     assert result.decision.tool_calls == []
     assert result.decision.needs_review is True
     assert result.protocol_repaired is True
+    assert result.attempts == 2
 
     # Planner 文本不能直接作为最终回答。
     assert (
         "现有信息已经足够"
         not in result.decision.decision_reason
     )
+
+
+@pytest.mark.anyio
+async def test_plain_content_retry_accepts_protocol_response():
+    client = FakeDeepSeekClient(
+        [
+            build_result(
+                content="现有信息已经足够。",
+                finish_reason="stop",
+            ),
+            build_result(
+                tool_calls=[
+                    build_tool_call(
+                        call_id="call_2",
+                        name="planner_finish",
+                        arguments={
+                            "reason": "信息已经足够。",
+                            "confidence": "high",
+                            "needs_review": False,
+                        },
+                    )
+                ],
+                finish_reason="tool_calls",
+            ),
+        ]
+    )
+
+    planner = LLMTaskPlanner(
+        llm_client=client,
+        registry=build_production_tool_registry(),
+    )
+
+    result = await planner.plan(build_request())
+
+    assert result.decision.action == "respond"
+    assert result.decision.needs_review is False
+    assert result.attempts == 2
+    assert result.protocol_repaired is True
 
 
 @pytest.mark.anyio

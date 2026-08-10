@@ -54,6 +54,7 @@ class PlannerLLMClient(Protocol):
         tools: list[dict[str, Any]] | None = None,
         thinking_enabled: bool = False,
         max_completion_tokens: int = 1024,
+        tool_choice: str | dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         ...
 
@@ -967,6 +968,7 @@ class LLMTaskPlanner:
         last_protocol_error: str | None = None
         last_protocol_error_type: str | None = None
         last_raw_tool_call_names: list[str] = []
+        last_plain_text_content: str = ""
 
         logger.info(
             "llm_task_planner_started",
@@ -990,6 +992,11 @@ class LLMTaskPlanner:
                     thinking_enabled=False,
                     max_completion_tokens=(
                         self.max_completion_tokens
+                    ),
+                    tool_choice=(
+                        "required"
+                        if tool_definitions
+                        else None
                     ),
                 )
             except Exception as exc:
@@ -1076,59 +1083,17 @@ class LLMTaskPlanner:
                         type(exc).__name__
                     )
                 except PlannerPlainTextRecovery as exc:
-                    recovered = PlannerDecision(
-                        action="respond",
-                        tool_calls=[],
-                        decision_reason=(
-                            "模型未使用工具协议，"
-                            "已按直接回答恢复并交由复核。"
-                        ),
-                        confidence="medium",
-                        needs_review=True,
-                        plan_version=request.agent_round,
+                    # 先按协议修复提示重试一次，而不是直接恢复成
+                    # “直接回答”。只有重试仍返回普通正文时，
+                    # 才降级为带复核标记的直接回答恢复。
+                    last_protocol_error = str(exc)
+                    last_protocol_error_type = (
+                        type(exc).__name__
                     )
-                    try:
-                        _validate_decision_consistency(
-                            decision=recovered,
-                            available_business_tool_names=(
-                                available_business_tool_names
-                                or frozenset()
-                            ),
-                        )
-                    except PlannerDecisionConsistencyError:
-                        recovered = PlannerDecision(
-                            action="fallback",
-                            tool_calls=[],
-                            decision_reason=(
-                                "恢复后的直接回答未通过一致性校验。"
-                            ),
-                            confidence="low",
-                            needs_review=False,
-                            plan_version=request.agent_round,
-                        )
-                    logger.info(
-                        "llm_task_planner_plain_text_recovery",
-                        request_id=request.request_id,
-                        run_id=request.run_id,
-                        agent_round=request.agent_round,
-                        attempt=attempt_index,
-                        text_length=len(exc.content),
+                    current_repair_prompt = (
+                        PLANNER_PROTOCOL_REPAIR_PROMPT
                     )
-                    return PlannerInvocationResult(
-                        decision=recovered,
-                        assistant_message=assistant_message,
-                        model=result.get("model"),
-                        finish_reason=result.get(
-                            "finish_reason",
-                            "",
-                        ),
-                        usage=result.get("usage") or {},
-                        attempts=attempt_index,
-                        protocol_repaired=True,
-                        raw_tool_call_names=(
-                            last_raw_tool_call_names
-                        ),
-                    )
+                    last_plain_text_content = exc.content
                 except ValidationError as exc:
                     last_protocol_error = (
                         "Planner 结构化字段校验失败："
@@ -1208,6 +1173,64 @@ class LLMTaskPlanner:
                         ),
                     }
                 )
+
+        if (
+            last_protocol_error_type
+            == "PlannerPlainTextRecovery"
+        ):
+            recovered = PlannerDecision(
+                action="respond",
+                tool_calls=[],
+                decision_reason=(
+                    "模型重试后仍未使用工具协议，"
+                    "已按直接回答恢复并交由复核。"
+                ),
+                confidence="medium",
+                needs_review=True,
+                plan_version=request.agent_round,
+            )
+            try:
+                _validate_decision_consistency(
+                    decision=recovered,
+                    available_business_tool_names=(
+                        available_business_tool_names
+                        or frozenset()
+                    ),
+                )
+            except PlannerDecisionConsistencyError:
+                recovered = PlannerDecision(
+                    action="fallback",
+                    tool_calls=[],
+                    decision_reason=(
+                        "恢复后的直接回答未通过一致性校验。"
+                    ),
+                    confidence="low",
+                    needs_review=False,
+                    plan_version=request.agent_round,
+                )
+            logger.info(
+                "llm_task_planner_plain_text_recovery",
+                request_id=request.request_id,
+                run_id=request.run_id,
+                agent_round=request.agent_round,
+                attempts=total_attempts,
+                text_length=len(last_plain_text_content),
+            )
+            return PlannerInvocationResult(
+                decision=recovered,
+                assistant_message=assistant_message,
+                model=result.get("model"),
+                finish_reason=result.get(
+                    "finish_reason",
+                    "",
+                ),
+                usage=result.get("usage") or {},
+                attempts=total_attempts,
+                protocol_repaired=True,
+                raw_tool_call_names=(
+                    last_raw_tool_call_names
+                ),
+            )
 
         return PlannerInvocationResult(
             decision=PlannerDecision(
