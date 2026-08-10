@@ -87,8 +87,6 @@ class BgeReranker:
     ) -> list[RetrievedChunk]:
         if not candidates:
             return []
-        if len(candidates) == 1:
-            return list(candidates)
 
         model = self._load_model()
         pairs = [[query, chunk.text] for chunk in candidates]
@@ -217,8 +215,6 @@ class HttpReranker:
     ) -> list[RetrievedChunk]:
         if not candidates:
             return []
-        if len(candidates) == 1:
-            return list(candidates)
 
         response = self._client.post(
             f"{self.base_url}/rerank",

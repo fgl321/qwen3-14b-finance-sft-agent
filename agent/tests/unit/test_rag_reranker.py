@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import math
 import pytest
+from types import SimpleNamespace
 
 from app.rag.chunker import ParentChildChunker
 from app.rag.rag_types import RetrievedChunk
 from app.rag.reranker import (
     BgeReranker,
+    HttpReranker,
     NoopReranker,
 )
 
@@ -53,6 +56,45 @@ def test_normalize_scores_single_chunk_is_100() -> None:
     chunks = [_chunk("c1", "a", metadata={"rerank_raw_score": 2.0})]
     normalized = BgeReranker.normalize_scores(chunks)
     assert normalized[0].score == 100.0
+
+
+def test_apply_rerank_score_attaches_probability() -> None:
+    chunk = _chunk("c1", "a")
+    scored = BgeReranker._apply_rerank_score(
+        chunk=chunk,
+        raw_score=1.0,
+    )
+    assert "rerank_probability" in scored.metadata
+    assert scored.metadata["rerank_probability"] == pytest.approx(
+        1.0 / (1.0 + math.exp(-1.0)),
+    )
+
+
+def test_http_reranker_scores_single_candidate() -> None:
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return {"scores": [2.0]}
+
+    reranker = HttpReranker(
+        base_url="http://example.invalid",
+        top_k=6,
+    )
+    reranker._client = SimpleNamespace(
+        post=lambda *args, **kwargs: FakeResponse()
+    )
+
+    result = reranker.rerank(
+        query="q",
+        candidates=[_chunk("c1", "a")],
+    )
+
+    assert len(result) == 1
+    assert result[0].metadata["rerank_probability"] == pytest.approx(
+        1.0 / (1.0 + math.exp(-2.0)),
+    )
 
 
 @pytest.mark.parametrize(

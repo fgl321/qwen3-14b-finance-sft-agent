@@ -8,7 +8,10 @@ from app.rag.rag_service import RagAnswerService
 from app.rag.rag_types import RetrievedChunk
 
 
-def _chunk(chunk_id: str = "c1") -> RetrievedChunk:
+def _chunk(
+    chunk_id: str = "c1",
+    metadata: dict | None = None,
+) -> RetrievedChunk:
     return RetrievedChunk(
         chunk_id=chunk_id,
         document_id="doc_1",
@@ -18,7 +21,10 @@ def _chunk(chunk_id: str = "c1") -> RetrievedChunk:
         page_start=1,
         page_end=1,
         section_path=["家庭"],
-        metadata={"score_type": "normalized_hybrid_score_0_100"},
+        metadata={
+            "score_type": "normalized_hybrid_score_0_100",
+            **(metadata or {}),
+        },
     )
 
 
@@ -142,6 +148,107 @@ async def test_retrieval_query_passed_to_store() -> None:
     )
 
     assert store.last_kwargs["query"] == "家庭每月必要支出是多少"
+
+
+def test_best_retrieved_chunk_without_rerank_probability_picks_first() -> None:
+    chunks = [
+        _chunk(chunk_id="c1"),
+        _chunk(chunk_id="c2"),
+    ]
+    best = RagAnswerService._best_retrieved_chunk(chunks)
+    assert best is not None
+    assert best.chunk_id == "c1"
+
+
+def test_best_retrieved_chunk_prefers_higher_rerank_probability() -> None:
+    chunks = [
+        _chunk(
+            chunk_id="low",
+            metadata={"rerank_probability": 0.2},
+        ),
+        _chunk(
+            chunk_id="high",
+            metadata={"rerank_probability": 0.9},
+        ),
+    ]
+    best = RagAnswerService._best_retrieved_chunk(chunks)
+    assert best is not None
+    assert best.chunk_id == "high"
+
+
+@pytest.mark.asyncio
+async def test_explicitly_scoped_document_is_deterministically_sufficient() -> None:
+    llm = FakeLLM(name="deepseek")
+    answer_llm = FakeLLM(name="qwen", answer="文档内容摘要 [1]")
+    store = FakeStore(
+        [
+            _chunk().model_copy(
+                update={
+                    "metadata": {
+                        "allow_rag_direct": False,
+                        "generated_content": True,
+                    }
+                }
+            )
+        ]
+    )
+    service = RagAnswerService(
+        llm_client=llm,
+        store=store,
+        embedding_provider=object(),
+        answer_llm_client=answer_llm,
+        settings=FakeSettings(),
+    )
+
+    result = await service.answer(
+        query="根据我刚上传的文档，它给出了什么结论？",
+        tenant_id="t",
+        owner_user_id="u",
+        knowledge_base_id="kb",
+        document_ids=["doc_1"],
+        relevance_gate=0.5,
+    )
+
+    assert result.evidence_assessment.sufficient is True
+    # 确定性放行不应调用 DeepSeek 做证据审核。
+    assert llm.calls == []
+    assert answer_llm.calls
+
+
+@pytest.mark.asyncio
+async def test_generated_doc_without_explicit_scope_is_rejected_without_llm() -> None:
+    llm = FakeLLM(name="deepseek")
+    store = FakeStore(
+        [
+            _chunk().model_copy(
+                update={
+                    "metadata": {
+                        "allow_rag_direct": False,
+                        "generated_content": True,
+                    }
+                }
+            )
+        ]
+    )
+    service = RagAnswerService(
+        llm_client=llm,
+        store=store,
+        embedding_provider=object(),
+        answer_llm_client=None,
+        settings=FakeSettings(),
+    )
+
+    result = await service.answer(
+        query="小米股票现在怎么样？",
+        tenant_id="t",
+        owner_user_id="u",
+        knowledge_base_id="kb",
+        relevance_gate=0.5,
+    )
+
+    assert result.evidence_assessment.sufficient is False
+    assert "生成内容" in result.evidence_assessment.reason
+    assert llm.calls == []
 
 
 def test_injection_payload_echo_is_sanitized() -> None:

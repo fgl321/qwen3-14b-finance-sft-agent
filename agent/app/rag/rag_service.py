@@ -167,9 +167,10 @@ class RagAnswerService:
         best_chunk = self._best_retrieved_chunk(
             retrieved_chunks
         )
-        attachment_scoped = (
-            best_chunk is not None
-            and str(best_chunk.document_id) in scoped_ids
+        attachment_scoped = any(
+            chunk.document_id is not None
+            and str(chunk.document_id) in scoped_ids
+            for chunk in retrieved_chunks
         )
         top_probability = self._top_rerank_probability(
             retrieved_chunks
@@ -415,14 +416,16 @@ class RagAnswerService:
         retrieved_chunks: list[RetrievedChunk],
     ) -> RetrievedChunk | None:
         best: RetrievedChunk | None = None
-        best_probability = -1.0
+        best_probability = float("-inf")
         for chunk in retrieved_chunks:
-            probability = float(
-                chunk.metadata.get("rerank_probability") or -1.0
-            )
+            raw = chunk.metadata.get("rerank_probability")
+            probability = float(raw) if raw is not None else -1.0
             if probability > best_probability:
                 best_probability = probability
                 best = chunk
+        if best is None and retrieved_chunks:
+            # 没有重排概率时也要能选出“最佳”证据，避免调用方误判为无证据。
+            best = retrieved_chunks[0]
         return best
 
     @staticmethod
