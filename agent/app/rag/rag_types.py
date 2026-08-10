@@ -15,6 +15,12 @@ class DocumentMeta(BaseModel):
     source_type: str
     visibility: str
     version: int = 1
+    # 知识源治理元数据（见 app/rag/source_classifier.py）
+    content_type: str = "unclassified"
+    scope: str = "thread"
+    trust_level: str = "unverified"
+    generated_content: bool = False
+    allow_rag_direct: bool = True
 
 
 class ParsedPage(BaseModel):

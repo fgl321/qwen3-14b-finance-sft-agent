@@ -13,6 +13,7 @@ from app.rag.embedding_factory import build_embedding_provider
 from app.rag.embeddings import EmbeddingProvider
 from app.rag.file_utils import calculate_sha256
 from app.rag.qdrant_store import QdrantRagStore
+from app.rag.source_classifier import SourceClassifier
 from app.rag.rag_types import (
     DocumentMeta,
     ParsedDocument,
@@ -39,6 +40,7 @@ class RagIngestionService:
         settings: Settings | None = None,
         embedding_provider: EmbeddingProvider | None = None,
         store: QdrantRagStore | None = None,
+        source_classifier: SourceClassifier | None = None,
     ) -> None:
         self.settings = settings or get_settings()
 
@@ -60,6 +62,10 @@ class RagIngestionService:
 
         self.store = store or QdrantRagStore(
             settings=self.settings,
+        )
+        self.source_classifier = (
+            source_classifier
+            or SourceClassifier(settings=self.settings)
         )
 
     def ingest_file(
@@ -97,13 +103,18 @@ class RagIngestionService:
                 ),
             )
         )
+        display_file_name = (
+            original_file_name
+            or getattr(legacy_parsed, "file_name", None)
+            or Path(file_path).name
+        )
+        source_metadata = self.source_classifier.classify(
+            text=str(legacy_parsed)[:16000],
+            file_name=display_file_name,
+        )
         meta = DocumentMeta(
             document_id=document_id,
-            file_name=(
-                original_file_name
-                or getattr(legacy_parsed, "file_name", None)
-                or Path(file_path).name
-            ),
+            file_name=display_file_name,
             file_sha256=file_sha256,
             tenant_id=str(tenant_id),
             owner_user_id=str(owner_user_id),
@@ -115,6 +126,11 @@ class RagIngestionService:
             ),
             visibility=visibility,
             version=1,
+            content_type=source_metadata.content_type,
+            scope=source_metadata.scope,
+            trust_level=source_metadata.trust_level,
+            generated_content=source_metadata.generated_content,
+            allow_rag_direct=source_metadata.allow_rag_direct,
         )
         parsed = ParsedDocument(
             meta=meta,

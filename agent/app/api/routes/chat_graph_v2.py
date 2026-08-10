@@ -277,7 +277,9 @@ async def _run_rag_attempt(
                 "attempted": True,
                 "sufficient": sufficient,
                 "replayed": True,
-                "retrieved_count": int(rag.get("retrieved_count") or 0),
+                "retrieved_count": len(
+                    rag.get("retrieved_chunks") or []
+                ),
             }
         )
         if sufficient or payload.rag_mode == "required":
@@ -374,8 +376,8 @@ async def _run_rag_attempt(
                     "sufficient": sufficient,
                     "replayed": False,
                     "cache_hit": True,
-                    "retrieved_count": int(
-                        rag.get("retrieved_count") or 0
+                    "retrieved_count": len(
+                        rag.get("retrieved_chunks") or []
                     ),
                     "citation_count": len(rag.get("citations") or []),
                 }
@@ -447,7 +449,9 @@ async def _run_rag_attempt(
             {
                 "attempted": True,
                 "sufficient": sufficient,
-                "retrieved_count": int(rag.get("retrieved_count") or 0),
+                "retrieved_count": len(
+                    rag.get("retrieved_chunks") or []
+                ),
                 "citation_count": len(rag.get("citations") or []),
             }
         )

@@ -196,6 +196,19 @@ class ParentChildChunker:
                         "file_sha256": parsed_document.meta.file_sha256,
                         "source_type": parsed_document.meta.source_type,
                         "document_version": parsed_document.meta.version,
+                        "content_type": (
+                            parsed_document.meta.content_type
+                        ),
+                        "scope": parsed_document.meta.scope,
+                        "trust_level": (
+                            parsed_document.meta.trust_level
+                        ),
+                        "generated_content": (
+                            parsed_document.meta.generated_content
+                        ),
+                        "allow_rag_direct": (
+                            parsed_document.meta.allow_rag_direct
+                        ),
                     },
                 )
             )
@@ -264,6 +277,23 @@ class ParentChildChunker:
                         "document_version": parent_chunk.metadata.get(
                             "document_version"
                         ),
+                        "content_type": parent_chunk.metadata.get(
+                            "content_type"
+                        ),
+                        "scope": parent_chunk.metadata.get("scope"),
+                        "trust_level": parent_chunk.metadata.get(
+                            "trust_level"
+                        ),
+                        "generated_content": (
+                            parent_chunk.metadata.get(
+                                "generated_content"
+                            )
+                        ),
+                        "allow_rag_direct": (
+                            parent_chunk.metadata.get(
+                                "allow_rag_direct"
+                            )
+                        ),
                     },
                 )
             )
@@ -321,6 +351,25 @@ class ParentChildChunker:
                                 )
                             ),
                             "fallback_child": True,
+                            "content_type": (
+                                parent_chunk.metadata.get(
+                                    "content_type"
+                                )
+                            ),
+                            "scope": parent_chunk.metadata.get("scope"),
+                            "trust_level": parent_chunk.metadata.get(
+                                "trust_level"
+                            ),
+                            "generated_content": (
+                                parent_chunk.metadata.get(
+                                    "generated_content"
+                                )
+                            ),
+                            "allow_rag_direct": (
+                                parent_chunk.metadata.get(
+                                    "allow_rag_direct"
+                                )
+                            ),
                         },
                     )
                 )
