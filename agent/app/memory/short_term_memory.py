@@ -8,6 +8,34 @@ from uuid import uuid4
 from app.personal_data.privacy import redact_sensitive_text
 
 
+class StateVersionConflictError(RuntimeError):
+    """Raised when a CAS conversation-state commit sees a version mismatch."""
+
+
+_CONVERSATION_STATE_CAS_SCRIPT = """
+local current = redis.call('GET', KEYS[1])
+local expected_version = tonumber(ARGV[3])
+local allowed = false
+if current == false and expected_version == 0 then
+  allowed = true
+elseif current then
+  local ok, decoded = pcall(cjson.decode, current)
+  if ok and type(decoded) == 'table' then
+    local current_version = decoded.state_version or 0
+    if current_version == expected_version then
+      allowed = true
+    end
+  end
+end
+if allowed then
+  redis.call('SET', KEYS[1], ARGV[2])
+  redis.call('EXPIRE', KEYS[1], tonumber(ARGV[4]))
+  return 1
+end
+return 0
+"""
+
+
 class ShortTermMemoryService:
     """
     Redis 短期记忆。
@@ -98,6 +126,27 @@ class ShortTermMemoryService:
         return self._key(
             user_id=user_id, thread_id=thread_id, tenant_id=tenant_id
         ) + ":summary"
+
+    def _thread_meta_key(
+        self, *, user_id: str, thread_id: str, tenant_id: str
+    ) -> str:
+        return self._key(
+            user_id=user_id, thread_id=thread_id, tenant_id=tenant_id
+        ) + ":meta"
+
+    def _conversation_state_key(
+        self, *, user_id: str, thread_id: str, tenant_id: str
+    ) -> str:
+        return self._key(
+            user_id=user_id, thread_id=thread_id, tenant_id=tenant_id
+        ) + ":conversation_state"
+
+    def _narrative_key(
+        self, *, user_id: str, thread_id: str, tenant_id: str
+    ) -> str:
+        return self._key(
+            user_id=user_id, thread_id=thread_id, tenant_id=tenant_id
+        ) + ":narrative"
 
     @staticmethod
     def _validate_identity(user_id: str, thread_id: str) -> None:
@@ -358,6 +407,247 @@ class ShortTermMemoryService:
             value = value.decode("utf-8", errors="replace")
         return redact_sensitive_text(str(value or ""))
 
+    def get_thread_meta(
+        self,
+        *,
+        user_id: str,
+        thread_id: str,
+        tenant_id: str = "default",
+    ) -> dict[str, Any] | None:
+        """Read generic thread-level metadata (e.g. active resource scope)."""
+        self._validate_identity(user_id, thread_id)
+        if not self.enabled:
+            return None
+        raw = self.redis.get(
+            self._thread_meta_key(
+                user_id=user_id,
+                thread_id=thread_id,
+                tenant_id=tenant_id,
+            )
+        )
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8", errors="replace")
+        if not raw:
+            return None
+        try:
+            value = json.loads(str(raw))
+        except Exception:
+            return None
+        return value if isinstance(value, dict) else None
+
+    def set_thread_meta(
+        self,
+        *,
+        user_id: str,
+        thread_id: str,
+        tenant_id: str = "default",
+        metadata: dict[str, Any],
+    ) -> None:
+        """Persist generic thread metadata with the same TTL as the thread."""
+        self._validate_identity(user_id, thread_id)
+        if not self.enabled:
+            return
+        self.redis.setex(
+            self._thread_meta_key(
+                user_id=user_id,
+                thread_id=thread_id,
+                tenant_id=tenant_id,
+            ),
+            self.ttl_seconds,
+            json.dumps(metadata, ensure_ascii=False),
+        )
+
+    def delete_thread_meta(
+        self,
+        *,
+        user_id: str,
+        thread_id: str,
+        tenant_id: str = "default",
+    ) -> int:
+        self._validate_identity(user_id, thread_id)
+        if not self.enabled:
+            return 0
+        return int(
+            self.redis.delete(
+                self._thread_meta_key(
+                    user_id=user_id,
+                    thread_id=thread_id,
+                    tenant_id=tenant_id,
+                )
+            )
+        )
+
+    def get_conversation_state(
+        self,
+        *,
+        user_id: str,
+        thread_id: str,
+        tenant_id: str = "default",
+    ) -> dict[str, Any] | None:
+        """Read structured conversation state (active task, focus, pending action)."""
+        self._validate_identity(user_id, thread_id)
+        if not self.enabled:
+            return None
+        raw = self.redis.get(
+            self._conversation_state_key(
+                user_id=user_id,
+                thread_id=thread_id,
+                tenant_id=tenant_id,
+            )
+        )
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8", errors="replace")
+        if not raw:
+            return None
+        try:
+            value = json.loads(str(raw))
+        except Exception:
+            return None
+        return value if isinstance(value, dict) else None
+
+    def set_conversation_state(
+        self,
+        *,
+        user_id: str,
+        thread_id: str,
+        tenant_id: str = "default",
+        state: dict[str, Any],
+        expected_version: int | None = None,
+        expected_state: dict[str, Any] | None = None,
+    ) -> None:
+        """Persist structured conversation state with CAS when a version is
+        supplied.  ``expected_version`` prevents lost updates from concurrent
+        turns on the same thread; a mismatch raises StateVersionConflictError.
+        """
+        self._validate_identity(user_id, thread_id)
+        if not self.enabled:
+            return
+        if not isinstance(state, dict):
+            raise ValueError("conversation state must be an object")
+        key = self._conversation_state_key(
+            user_id=user_id,
+            thread_id=thread_id,
+            tenant_id=tenant_id,
+        )
+        payload = json.dumps(state, ensure_ascii=False)
+        if expected_version is None:
+            self.redis.setex(key, self.ttl_seconds, payload)
+            return
+        expected_payload = (
+            json.dumps(expected_state, ensure_ascii=False)
+            if expected_state is not None
+            else None
+        )
+        if expected_payload is None:
+            raise ValueError(
+                "expected_state is required for CAS conversation-state commit"
+            )
+        current_raw = self.redis.get(key)
+        current_version = 0
+        if current_raw:
+            try:
+                current = json.loads(
+                    current_raw.decode("utf-8", errors="replace")
+                    if isinstance(current_raw, bytes)
+                    else current_raw
+                )
+                current_version = int(
+                    current.get("state_version") or 0
+                )
+            except Exception:
+                current_version = -1
+        if current_version != int(expected_version):
+            raise StateVersionConflictError(
+                "conversation state version conflict: "
+                f"expected={expected_version} actual={current_version}"
+            )
+        ok = self.redis.eval(
+            _CONVERSATION_STATE_CAS_SCRIPT,
+            1,
+            key,
+            expected_payload,
+            payload,
+            str(expected_version),
+            self.ttl_seconds,
+        )
+        if not ok:
+            raise StateVersionConflictError(
+                "conversation state CAS commit failed: "
+                f"expected={expected_version}"
+            )
+
+    def delete_conversation_state(
+        self,
+        *,
+        user_id: str,
+        thread_id: str,
+        tenant_id: str = "default",
+    ) -> int:
+        self._validate_identity(user_id, thread_id)
+        if not self.enabled:
+            return 0
+        return int(
+            self.redis.delete(
+                self._conversation_state_key(
+                    user_id=user_id,
+                    thread_id=thread_id,
+                    tenant_id=tenant_id,
+                )
+            )
+        )
+
+    def get_narrative_segments(
+        self,
+        *,
+        user_id: str,
+        thread_id: str,
+        tenant_id: str = "default",
+    ) -> list[dict[str, Any]]:
+        """Read L2.5 narrative memory segments (oldest first)."""
+        self._validate_identity(user_id, thread_id)
+        if not self.enabled:
+            return []
+        raw = self.redis.get(
+            self._narrative_key(
+                user_id=user_id,
+                thread_id=thread_id,
+                tenant_id=tenant_id,
+            )
+        )
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8", errors="replace")
+        if not raw:
+            return []
+        try:
+            value = json.loads(str(raw))
+        except Exception:
+            return []
+        return value if isinstance(value, list) else []
+
+    def set_narrative_segments(
+        self,
+        *,
+        user_id: str,
+        thread_id: str,
+        tenant_id: str = "default",
+        segments: list[dict[str, Any]],
+    ) -> None:
+        """Persist L2.5 narrative memory with the thread TTL."""
+        self._validate_identity(user_id, thread_id)
+        if not self.enabled:
+            return
+        if not isinstance(segments, list):
+            raise ValueError("narrative segments must be a list")
+        self.redis.setex(
+            self._narrative_key(
+                user_id=user_id,
+                thread_id=thread_id,
+                tenant_id=tenant_id,
+            ),
+            self.ttl_seconds,
+            json.dumps(segments, ensure_ascii=False),
+        )
+
     def clear_thread(
         self,
         *,
@@ -371,6 +661,15 @@ class ShortTermMemoryService:
         keys = [
             self._key(user_id=user_id, thread_id=thread_id, tenant_id=tenant_id),
             self._summary_key(
+                user_id=user_id, thread_id=thread_id, tenant_id=tenant_id
+            ),
+            self._thread_meta_key(
+                user_id=user_id, thread_id=thread_id, tenant_id=tenant_id
+            ),
+            self._conversation_state_key(
+                user_id=user_id, thread_id=thread_id, tenant_id=tenant_id
+            ),
+            self._narrative_key(
                 user_id=user_id, thread_id=thread_id, tenant_id=tenant_id
             ),
         ]

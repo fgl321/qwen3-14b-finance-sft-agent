@@ -139,6 +139,47 @@ def test_policy_should_review_multi_tool_plan():
     ) is True
 
 
+def test_policy_skips_review_for_repairable_schema_error():
+    registry = build_production_tool_registry()
+    policy = PlanReviewPolicy(registry=registry)
+    decision = PlannerDecision(
+        action="call_tools",
+        tool_calls=[
+            ToolCallRequest(
+                tool_call_id="call_1",
+                tool_name="yearly_expense_to_monthly",
+                arguments={"yearly_necessary_expense": 180000},
+            )
+        ],
+        decision_reason="修复工具参数。",
+        confidence="high",
+        needs_review=False,
+        plan_version=1,
+    )
+    route_context = {
+        "complexity": "medium",
+        "risk_level": "low",
+    }
+    assert (
+        policy.should_review(
+            decision=decision,
+            route_context=route_context,
+            repeated_error_count=2,
+            repairable_schema_error=True,
+        )
+        is False
+    )
+    assert (
+        policy.should_review(
+            decision=decision,
+            route_context=route_context,
+            repeated_error_count=2,
+            repairable_schema_error=False,
+        )
+        is True
+    )
+
+
 def test_policy_should_review_flagged_respond_decision():
     registry = build_production_tool_registry()
     policy = PlanReviewPolicy(registry=registry)

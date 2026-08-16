@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
+from dataclasses import replace
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -15,8 +16,10 @@ from app.agent_graph.schemas.loop_schema import (
 from app.agent_graph.schemas.planner_schema import (
     PlannerDecision,
     ToolCallRequest,
+    resolve_typed_references,
 )
 from app.agent_graph.schemas.tool_schema import (
+    ToolErrorInfo,
     ToolResult,
     ToolTraceEntry,
 )
@@ -167,6 +170,117 @@ async def execute_planner_tool_calls(
     if not decision.tool_calls:
         raise ValueError(
             "工具执行节点没有收到任何工具调用。"
+        )
+
+    if any(call.depends_on for call in decision.tool_calls):
+        pending = {call.effective_step_id: call for call in decision.tool_calls}
+        outputs: dict[str, Any] = {}
+        all_results: list[ToolResult] = []
+        all_traces: list[ToolTraceEntry] = []
+        all_feedback: list[dict[str, Any]] = []
+        all_reuse: list[ToolReuseAudit] = []
+        failed_steps: set[str] = set()
+        executed = reused = succeeded = failed = 0
+        while pending:
+            blocked = [
+                call
+                for call in pending.values()
+                if any(dependency in failed_steps for dependency in call.depends_on)
+            ]
+            for call in blocked:
+                dependency_error = ToolResult(
+                    tool_call_id=call.tool_call_id,
+                    tool_name=call.tool_name,
+                    success=False,
+                    error=ToolErrorInfo(
+                        code="DEPENDENCY_UNAVAILABLE",
+                        message="前置工具步骤失败，当前步骤未执行。",
+                        model_repairable=True,
+                        infrastructure_retryable=False,
+                        details={
+                            "step_id": call.effective_step_id,
+                            "failed_dependencies": [
+                                dependency
+                                for dependency in call.depends_on
+                                if dependency in failed_steps
+                            ],
+                        },
+                    ),
+                )
+                all_results.append(dependency_error)
+                all_feedback.append(build_tool_feedback_message(dependency_error))
+                all_traces.append(
+                    ToolTraceEntry(
+                        tool_call_id=call.tool_call_id,
+                        tool_name=call.tool_name,
+                        status="rejected",
+                        error_code="DEPENDENCY_UNAVAILABLE",
+                    )
+                )
+                failed_steps.add(call.effective_step_id)
+                pending.pop(call.effective_step_id, None)
+                failed += 1
+            if not pending:
+                break
+            ready = [
+                call for call in pending.values()
+                if all(dependency in outputs for dependency in call.depends_on)
+            ]
+            if not ready:
+                raise RuntimeError("tool dependency graph cannot make progress")
+            resolved_calls = [
+                call.model_copy(
+                    update={
+                        "arguments": resolve_typed_references(call.arguments, outputs),
+                        "depends_on": [],
+                    }
+                )
+                for call in ready
+            ]
+            wave = await execute_planner_tool_calls(
+                decision=PlannerDecision(
+                    action="call_tools",
+                    tool_calls=resolved_calls,
+                    decision_reason="execute a validated dependency wave",
+                    confidence=decision.confidence,
+                    plan_version=decision.plan_version,
+                ),
+                executor=executor,
+                context=replace(
+                    context,
+                    remaining_tool_calls=max(
+                        0,
+                        context.remaining_tool_calls - executed,
+                    ),
+                ),
+                successful_results_by_signature=successful_results_by_signature,
+                round_index=round_index,
+            )
+            by_id = {item.tool_call_id: item for item in wave.tool_results}
+            for original in ready:
+                result = by_id.get(original.tool_call_id)
+                if result is not None and result.success:
+                    outputs[original.effective_step_id] = result.output
+                else:
+                    failed_steps.add(original.effective_step_id)
+                pending.pop(original.effective_step_id, None)
+            all_results.extend(wave.tool_results)
+            all_traces.extend(wave.tool_traces)
+            all_feedback.extend(wave.feedback_messages)
+            all_reuse.extend(wave.reused_tool_calls)
+            executed += wave.executed_call_count
+            reused += wave.reused_call_count
+            succeeded += wave.successful_call_count
+            failed += wave.failed_call_count
+        return ToolExecutorNodeResult(
+            tool_results=all_results,
+            tool_traces=all_traces,
+            feedback_messages=all_feedback,
+            reused_tool_calls=all_reuse,
+            executed_call_count=executed,
+            reused_call_count=reused,
+            successful_call_count=succeeded,
+            failed_call_count=failed,
         )
 
     reuse_cache = dict(

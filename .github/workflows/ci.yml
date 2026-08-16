@@ -5,13 +5,25 @@ on:
   pull_request:
 
 jobs:
-  static-checks:
+  quality-gate:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: |
+            agent/requirements-ci.txt
+            agent/requirements-dev.txt
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "pnpm"
+          cache-dependency-path: frontend/pnpm-lock.yaml
       - name: Reject committed secrets and model weights
         shell: bash
         run: |
@@ -20,3 +32,14 @@ jobs:
           ! grep -RIn --exclude-dir=.git -E 'BEGIN (OPENSSH |RSA |EC )?PRIVATE KEY' .
       - name: Compile Python sources
         run: python -m compileall -q agent/app agent/scripts model
+      - name: Install Python test dependencies
+        run: python -m pip install -r agent/requirements-ci.txt -r agent/requirements-dev.txt
+      - name: Run consolidated backend test suite
+        env:
+          PYTHONPATH: agent
+        run: python -m pytest -q agent/tests
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build

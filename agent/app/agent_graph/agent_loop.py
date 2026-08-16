@@ -62,6 +62,7 @@ class AgentReviewer(Protocol):
         decision: PlannerDecision,
         route_context: dict[str, Any],
         repeated_error_count: int,
+        repairable_schema_error: bool = False,
     ) -> bool:
         ...
 
@@ -121,6 +122,7 @@ class _LoopAccumulator:
     plan_revision_count: int = 0
 
     last_error_signature: str | None = None
+    last_repairable_schema_error: bool = False
 
 
 def _fallback_decision(
@@ -424,6 +426,9 @@ class AgentToolLoop:
                         repeated_error_count=(
                             accumulator.repeated_error_count
                         ),
+                        repairable_schema_error=(
+                            accumulator.last_repairable_schema_error
+                        ),
                     )
                 )
 
@@ -705,6 +710,25 @@ class AgentToolLoop:
                         in node_result.reused_tool_calls
                     ],
                 )
+
+            accumulator.last_repairable_schema_error = False
+            for tool_result in reversed(node_result.tool_results):
+                if tool_result.success:
+                    continue
+                error = tool_result.error
+                if (
+                    error is not None
+                    and bool(
+                        getattr(error, "model_repairable", False)
+                    )
+                    and str(getattr(error, "code", "") or "")
+                    in {
+                        "ARGUMENT_SCHEMA_ERROR",
+                        "DOMAIN_INPUT_ERROR",
+                    }
+                ):
+                    accumulator.last_repairable_schema_error = True
+                break
 
             no_progress_exceeded = (
                 self._record_round_progress(

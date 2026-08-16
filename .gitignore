@@ -10,6 +10,7 @@ __pycache__/
 .vscode/
 logs/
 *.log
+*.sqlite3
 model/artifacts/
 agent/data/uploads/*
 !agent/data/uploads/.gitkeep
@@ -19,6 +20,10 @@ agent/data/uploads/*
 *.bin
 *.gguf
 *.tar.gz
+*.tgz
 *.zip
 frontend/node_modules/
 frontend/dist/
+.remote_stage/
+artifacts/
+e2e_receipt_debug.py

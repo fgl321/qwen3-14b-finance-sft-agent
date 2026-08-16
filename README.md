@@ -9,7 +9,9 @@
 3. Release 中的扩充 tokenizer
 4. Release 中的 `embedding_patch.pt`
 
-Agent 使用 Qwen3-14B Finance SFT 负责最终回答，使用下载者自己的 DeepSeek API Key 负责路由、规划、复核、工具编排、RAG 和记忆抽取。
+Agent 使用 DeepSeek V4 Flash 负责意图路由、规划、计划复核和输出防护；最终回答可由用户在每次请求中选择本地蒸馏 Qwen3-14B Finance SFT 或 DeepSeek API。金融计算由十个确定性白名单工具完成，不让语言模型心算关键数字。
+
+系统采用显式 LangGraph 状态机、混合检索 RAG、短/长期记忆、异步文档入库、安全 SSE 进度和可审计工具轨迹。完整设计见 [系统架构](docs/ARCHITECTURE.md)。
 
 ## 硬件与空间
 
@@ -83,8 +85,7 @@ Copy-Item agent\.env.example agent\.env
 
 浏览器访问 `http://127.0.0.1:8002/`。
 
-默认会打开内置的极简聊天页。可选地构建 React 前端（聊天 + 文档上传 +
-引用展示），构建产物会被 Agent 自动托管：
+未构建前端时会打开内置后备页。正式展示请构建 React 前端，构建产物会被 Agent 自动托管：
 
 ```powershell
 cd frontend
@@ -101,27 +102,28 @@ pnpm build
 - **文档范围**：上传后自动切换到「该文档」范围（也可手动选择「全部文档」），
   检索会限定在所选文档内；对「这个文档讲了什么」类问题会自动回退到文档位置序，
   保证回答始终基于刚上传的文档。
+- **异步入库**：PDF、DOCX、TXT、MD 上传后立即返回任务编号；解析、切块和向量化不阻塞 API，页面持续显示 queued/processing/completed/failed 状态。
+- **可控执行**：安全 SSE 展示当前节点；用户可停止生成。完成后可展开查看节点轨迹、工具名、状态和耗时，但不会暴露模型思维链。
+- **知识与记忆**：知识库列表、按文档检索/删除、会话隔离和长期记忆清理。
 
 ## 架构
 
+外层是确定性的状态机，内层只允许模型在有预算的节点中做有限自主决策：
+
 ```text
-Browser :8002
-    -> FastAPI / LangGraph Agent
-       -> DeepSeek API：路由、规划、复核、RAG/记忆编排
-       -> PostgreSQL：长期事实
-       -> Redis：短期记忆
-       -> Qdrant + BGE-M3：知识检索
-       -> Local Qwen :8001：最终答案生成
-          -> Qwen3-14B base
-          -> final SFT LoRA
-          -> expanded tokenizer
-          -> embedding patch
+request boundary -> intent router -> planner (最多 3 轮) -> plan review
+  -> tool executor (0..N, bounded) -> observation validator
+  -> result validator -> answer synthesis (Qwen | DeepSeek)
+  -> output guard -> trace finalizer
 ```
+
+RAG 在请求边界编排：BGE-M3 dense+sparse 混合召回、父子块映射、BGE 重排、证据充分性和引用生成。PostgreSQL 保存 LangGraph checkpoint/长期事实，Redis 保存短期记忆，Qdrant 保存知识向量。
 
 ## 目录
 
 ```text
-agent/               金融 Agent、前端、Docker 依赖和测试
+agent/               FastAPI、LangGraph、RAG、记忆、工具和测试
+frontend/            React 对话与知识库界面
 model/               最终 SFT 模型加载器与本地 OpenAI 兼容服务
 scripts/             下载、启动脚本
 docs/                模型与交付说明
@@ -130,18 +132,25 @@ docs/                模型与交付说明
 ## 安全与限制
 
 - 不要提交 `.env`、API Key、SSH Key 或用户金融数据。
+- 这是固定 `personal/owner` 身份的单用户部署；浏览器提交的 tenant/user 不作为授权依据。若开放公网或改成多用户，必须增加真实认证、RBAC、限流和租户隔离。
+- 上传执行扩展名、MIME、文件签名和大小检查，使用随机存储文件名；工具注册表启动后冻结，所有循环和工具调用都有硬预算。
 - 本项目用于金融信息整理与辅助分析，不构成投资、法律、税务或持牌金融建议。
 - 模型可能产生错误数字、过时结论或不完整风险提示；生产使用前必须建立业务侧审核、监控和回滚机制。
 - 本仓库代码与最终 SFT 增量包采用 Apache License 2.0；官方 Qwen3-14B 基座不包含在本仓库中。
 
-## 验证状态
+## 质量门槛
+
+提交级 CI 统一运行全部后端测试、Python 编译检查、密钥/权重误提交检查和前端生产构建。发布级评测使用固定 1500 条金融盲测，在同一配置下比较基座、蒸馏和 SFT 模型，并分别测试 Qwen/DeepSeek 最终回答。指标、数据隔离和发布阻断条件见 [评测与发布门槛](docs/EVALUATION.md)。
+
+当前工作区联合验收：后端 `317 passed`，前端 TypeScript 检查与 Vite production build 通过（2026-08-13）。
+
+历史模型包验证：
 
 - 模型增量包：`qwen3-14b-finance-sft-adapter-v1.tar.gz`
 - 压缩包大小：242,086,199 bytes
 - SHA-256：`4447f31637905b5a51aaf6a99bf2c1397c21e0dbebd0d44fcb5981fca8af739d`
 - 独立自托管加载：通过（NVIDIA A100 80GB，Qwen3-14B 基座 + Release 包）
-- Agent 单元测试：188 passed、1 skipped
-- RAG/端到端评测（13 个用例）：13 passed；
+- RAG/端到端历史评测（13 个用例）：13 passed；
   Recall@3/Recall@5 = 1.0、MRR = 1.0、nDCG@5 = 1.0、引用命中率 = 1.0。
   覆盖概念问答、RAG 命中/无证据拒答、提示注入隔离、数值复算、
   短期记忆、长期记忆与风险边界。详见 `docs/eval/`。
@@ -149,4 +158,4 @@ docs/                模型与交付说明
   中国证监会陕西监管局投资者教育栏目《权益360：基金投资新手攻略》），
   配套测试题见 `docs/eval/finance-doc-test-questions.md`。
 
-详细结果见 `docs/RELEASE_VALIDATION.md`。
+模型包的历史结果见 `docs/RELEASE_VALIDATION.md`。历史报告不自动证明当前代码版本通过；以当前提交的 CI 和重新生成的评测报告为准。

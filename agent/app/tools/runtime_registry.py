@@ -11,6 +11,22 @@ from app.tools.production_finance_tools import (
     life_insurance_gap,
     yearly_expense_to_monthly,
 )
+from app.tools.financial_analytics_tools import (
+    AssetRebalanceInput,
+    BondAnalyticsInput,
+    CashflowNpvIrrInput,
+    CompoundInterestInput,
+    FinancialRatioInput,
+    LoanAmortizationInput,
+    PortfolioRiskInput,
+    asset_allocation_rebalance,
+    bond_analytics,
+    cashflow_npv_irr,
+    compound_interest_projection,
+    financial_ratio_analysis,
+    loan_amortization_compare,
+    portfolio_risk_metrics,
+)
 from app.tools.tool_specs import ToolSpec
 
 
@@ -159,6 +175,7 @@ def build_production_tool_registry() -> ToolRegistry:
                 side_effect=False,
                 idempotent=True,
                 parallel_safe=True,
+                source_class="pure_math",
             ),
             ToolSpec(
                 name="emergency_fund_range",
@@ -176,14 +193,15 @@ def build_production_tool_registry() -> ToolRegistry:
                 side_effect=False,
                 idempotent=True,
                 parallel_safe=True,
+                source_class="domain_heuristic",
             ),
             ToolSpec(
                 name="life_insurance_gap",
                 description=(
                     "根据家庭必要支出、保障年数、债务、教育责任、"
                     "可用资产和已有寿险保额，计算寿险保障缺口。"
-                    "缺少完成当前计算所必需的信息时，不应编造参数，"
-                    "应先向用户追问。"
+                    "用户未指定保障年数时不要追问或默认10年，"
+                    "应省略 coverage_years 以返回5/10/15年情景。"
                 ),
                 input_model=LifeInsuranceGapInput,
                 handler=life_insurance_gap,
@@ -194,6 +212,71 @@ def build_production_tool_registry() -> ToolRegistry:
                 side_effect=False,
                 idempotent=True,
                 parallel_safe=True,
+                source_class="user_fact_transform",
+            ),
+            ToolSpec(
+                name="compound_interest_projection",
+                description="计算复利、定投和目标储蓄的未来价值、累计投入与收益。",
+                input_model=CompoundInterestInput,
+                handler=compound_interest_projection,
+                tool_group="financial_calculation",
+                timeout_seconds=3.0,
+                source_class="pure_math",
+            ),
+            ToolSpec(
+                name="loan_amortization_compare",
+                description="比较等额本息、等额本金以及期初提前还款后的月供和利息。",
+                input_model=LoanAmortizationInput,
+                handler=loan_amortization_compare,
+                tool_group="financial_calculation",
+                timeout_seconds=3.0,
+                source_class="pure_math",
+            ),
+            ToolSpec(
+                name="cashflow_npv_irr",
+                description="根据逐期现金流计算净现值 NPV 和内部收益率 IRR。",
+                input_model=CashflowNpvIrrInput,
+                handler=cashflow_npv_irr,
+                tool_group="financial_calculation",
+                timeout_seconds=3.0,
+                source_class="pure_math",
+            ),
+            ToolSpec(
+                name="bond_analytics",
+                description="计算固定利率债券价格、麦考利久期、修正久期和凸性。",
+                input_model=BondAnalyticsInput,
+                handler=bond_analytics,
+                tool_group="financial_calculation",
+                timeout_seconds=3.0,
+                source_class="pure_math",
+            ),
+            ToolSpec(
+                name="portfolio_risk_metrics",
+                description="根据周期收益序列计算年化收益、波动率、夏普比率和最大回撤。",
+                input_model=PortfolioRiskInput,
+                handler=portfolio_risk_metrics,
+                tool_group="financial_calculation",
+                timeout_seconds=3.0,
+                source_class="pure_math",
+            ),
+            ToolSpec(
+                name="asset_allocation_rebalance",
+                description="比较当前资产配置与目标权重并生成确定性的买入、卖出或保持金额。",
+                input_model=AssetRebalanceInput,
+                handler=asset_allocation_rebalance,
+                tool_group="financial_calculation",
+                timeout_seconds=3.0,
+                risk_level="medium",
+                source_class="pure_math",
+            ),
+            ToolSpec(
+                name="financial_ratio_analysis",
+                description="计算偿债、盈利、资产效率指标以及三因素杜邦分析。",
+                input_model=FinancialRatioInput,
+                handler=financial_ratio_analysis,
+                tool_group="financial_calculation",
+                timeout_seconds=3.0,
+                source_class="pure_math",
             ),
         ]
     )

@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Body, Query
+from fastapi import APIRouter, Body, Query, Request
 
+from app.core.request_boundary import personal_request_identity
 from app.memory.long_term_memory import LongTermMemoryService
 
 
@@ -15,12 +16,17 @@ router = APIRouter(
 
 @router.get("/facts")
 def list_memory_facts(
+    request: Request,
     user_id: str = Query(...),
     tenant_id: str = Query("default"),
     fact_type: str | None = Query(None),
     limit: int = Query(50, ge=1, le=200),
 ) -> dict[str, Any]:
-    service = LongTermMemoryService()
+    identity = personal_request_identity(request.app.state.settings)
+    if request.app.state.settings.single_user_mode:
+        user_id = identity.user_id
+        tenant_id = identity.tenant_id
+    service = LongTermMemoryService(settings=request.app.state.settings)
     service.init_schema()
 
     facts = service.list_facts(
@@ -56,10 +62,20 @@ def list_memory_facts(
 
 @router.post("/facts")
 def upsert_memory_fact(
+    request: Request,
     payload: dict[str, Any] = Body(...),
 ) -> dict[str, Any]:
-    user_id = str(payload.get("user_id") or "").strip()
-    tenant_id = str(payload.get("tenant_id") or "default").strip()
+    identity = personal_request_identity(request.app.state.settings)
+    user_id = (
+        identity.user_id
+        if request.app.state.settings.single_user_mode
+        else str(payload.get("user_id") or "").strip()
+    )
+    tenant_id = (
+        identity.tenant_id
+        if request.app.state.settings.single_user_mode
+        else str(payload.get("tenant_id") or "default").strip()
+    )
     fact_type = str(payload.get("fact_type") or "").strip()
     fact_key = str(payload.get("fact_key") or "").strip()
     fact_value = payload.get("fact_value")
@@ -78,7 +94,7 @@ def upsert_memory_fact(
     if not isinstance(fact_value, dict):
         raise ValueError("fact_value 必须是 object")
 
-    service = LongTermMemoryService()
+    service = LongTermMemoryService(settings=request.app.state.settings)
     service.init_schema()
 
     fact = service.upsert_fact(
@@ -110,10 +126,15 @@ def upsert_memory_fact(
 
 @router.delete("/facts")
 def delete_user_memory_facts(
+    request: Request,
     user_id: str = Query(...),
     tenant_id: str = Query("default"),
 ) -> dict[str, Any]:
-    service = LongTermMemoryService()
+    identity = personal_request_identity(request.app.state.settings)
+    if request.app.state.settings.single_user_mode:
+        user_id = identity.user_id
+        tenant_id = identity.tenant_id
+    service = LongTermMemoryService(settings=request.app.state.settings)
     service.init_schema()
 
     deleted_count = service.delete_user_facts(
@@ -133,10 +154,15 @@ def delete_user_memory_facts(
 def delete_one_memory_fact(
     fact_type: str,
     fact_key: str,
+    request: Request,
     user_id: str = Query(...),
     tenant_id: str = Query("default"),
 ) -> dict[str, Any]:
-    service = LongTermMemoryService()
+    identity = personal_request_identity(request.app.state.settings)
+    if request.app.state.settings.single_user_mode:
+        user_id = identity.user_id
+        tenant_id = identity.tenant_id
+    service = LongTermMemoryService(settings=request.app.state.settings)
     service.init_schema()
 
     deleted_count = service.delete_fact(

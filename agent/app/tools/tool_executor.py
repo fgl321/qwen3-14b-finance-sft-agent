@@ -25,8 +25,9 @@ from app.agent_graph.schemas.tool_schema import (
     ToolResult,
     ToolTraceEntry,
 )
+from app.rag.rag_types import SourceAuthorityContract
 from app.tools.runtime_registry import ToolRegistry
-from app.tools.tool_specs import ToolSpec
+from app.tools.tool_specs import ToolSpec, tool_allowed
 
 
 _CREDENTIAL_KEYS = {
@@ -83,6 +84,8 @@ class ToolExecutionContext:
     allow_side_effects: bool = False
 
     remaining_tool_calls: int = 12
+
+    source_authority: Any | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -334,6 +337,45 @@ def _validation_error_details(
     }
 
 
+def normalize_source_authority(value: Any) -> Any:
+    """Normalize a SourceAuthorityContract or its JSON dict form.
+
+    None is preserved so callers without an authority contract keep their
+    legacy behaviour (no extra source restriction).
+    """
+
+    if value is None or isinstance(value, SourceAuthorityContract):
+        return value
+
+    if isinstance(value, Mapping):
+        allowed_fields = set(SourceAuthorityContract.model_fields)
+        payload = {
+            str(key): item
+            for key, item in value.items()
+            if str(key) in allowed_fields
+        }
+        try:
+            return SourceAuthorityContract.model_validate(payload)
+        except Exception:
+            return None
+
+    return None
+
+
+def source_authority_from_route_context(route_context: Any) -> Any:
+    """Extract the SourceAuthorityContract payload from route context."""
+
+    if not isinstance(route_context, Mapping):
+        return None
+
+    semantic_route = route_context.get("semantic_route") or {}
+
+    if not isinstance(semantic_route, Mapping):
+        return None
+
+    return semantic_route.get("source_authority")
+
+
 class ProductionToolExecutor:
     """
     生产级工具执行器。
@@ -388,6 +430,12 @@ class ProductionToolExecutor:
             return None
 
         if self._check_permission(
+            spec=spec,
+            context=context,
+        ) is not None:
+            return None
+
+        if self._check_source_authority(
             spec=spec,
             context=context,
         ) is not None:
@@ -465,6 +513,19 @@ class ProductionToolExecutor:
                 started_at=started_at,
                 code="PERMISSION_DENIED",
                 message=permission_error,
+            )
+
+        source_authority_error = self._check_source_authority(
+            spec=spec,
+            context=context,
+        )
+
+        if source_authority_error is not None:
+            return self._failed_outcome(
+                tool_call=tool_call,
+                started_at=started_at,
+                code="SOURCE_AUTHORITY_DENIED",
+                message=source_authority_error,
             )
 
         try:
@@ -658,6 +719,34 @@ class ProductionToolExecutor:
 
         return None
 
+    def _check_source_authority(
+        self,
+        *,
+        spec: ToolSpec,
+        context: ToolExecutionContext,
+    ) -> str | None:
+        """Deterministic source-authority gate on the real executor.
+
+        When no authority contract is present the gate is disabled so legacy
+        callers keep their previous behaviour.  Once a contract exists every
+        tool must pass ``tool_allowed``; unknown source classes fail closed.
+        """
+
+        authority = normalize_source_authority(
+            context.source_authority
+        )
+
+        if authority is None:
+            return None
+
+        if tool_allowed(spec.source_class, authority):
+            return None
+
+        return (
+            f"Tool {spec.name} source_class {spec.source_class} is "
+            "forbidden by the current Source Authority contract."
+        )
+
     async def _invoke_with_retry(
         self,
         *,
@@ -751,6 +840,7 @@ class ProductionToolExecutor:
                 if code in {
                     "TOOL_NOT_FOUND",
                     "PERMISSION_DENIED",
+                    "SOURCE_AUTHORITY_DENIED",
                     "AGENT_BUDGET_EXCEEDED",
                 }
                 else "failed"

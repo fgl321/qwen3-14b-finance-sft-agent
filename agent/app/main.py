@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -15,27 +16,31 @@ from fastapi.responses import FileResponse
 from app.agent_graph.production_runtime import (
     open_production_graph_runtime,
 )
-from app.api.routes import (
-    chat_graph,
-    chat_graph_v2,
-    memory,
-)
-from app.api.routes.chat import router as chat_router
+from app.agent_graph.release_contract import PRODUCTION_RUNTIME_REVISION
+from app.api.routes import chat_graph_v2, memory
 from app.api.routes.knowledge import router as knowledge_router
 from app.core.config import get_settings
 from app.core.logging import get_logger, setup_logging
+from app.core.request_boundary import personal_request_identity
 from app.llm.deepseek_client import DeepSeekClient
 from app.llm.qwen_client import QwenClient
 from app.llm.synthesis_proxy import SynthesisClientProxy
 from app.memory.short_term_memory import (
     ShortTermMemoryService,
 )
+from app.memory.raw_transcript_store import (
+    RawTranscriptStore,
+)
 from app.rag.embedding_factory import (
     build_embedding_provider,
+)
+from app.rag.document_lifecycle import (
+    RagDocumentLifecycleService,
 )
 from app.rag.reranker import build_reranker
 from app.rag.qdrant_store import QdrantRagStore
 from app.rag.rag_service import RagAnswerService
+from app.rag.ingestion_jobs import IngestionJobStore
 
 
 setup_logging()
@@ -43,6 +48,22 @@ logger = get_logger(__name__)
 
 # get_settings() 使用 lru_cache，安全在模块级别调用。
 settings = get_settings()
+
+
+def _production_limits():
+    from app.agent_graph.runtime.agent_limits import AgentLimits
+
+    return AgentLimits(
+        max_agent_rounds=settings.production_max_agent_rounds,
+        max_total_tool_calls=settings.production_max_total_tool_calls,
+        max_parallel_tool_calls=settings.production_max_parallel_tool_calls,
+        max_plan_repairs_per_execution_round=(
+            settings.production_max_plan_repairs_per_execution_round
+        ),
+        max_plan_revisions=settings.production_max_plan_revisions,
+        max_output_rewrites=settings.production_max_output_rewrites,
+        total_run_timeout_seconds=settings.production_total_timeout_seconds,
+    )
 
 
 @asynccontextmanager
@@ -66,6 +87,9 @@ async def lifespan(
     """
 
     app.state.settings = settings
+    app.state.request_identity = personal_request_identity(settings)
+    app.state.ingestion_jobs = IngestionJobStore()
+    app.state.ingestion_tasks = set()
 
     app.state.deepseek = DeepSeekClient(
         settings
@@ -106,6 +130,30 @@ async def lifespan(
         app.state.rag_store = QdrantRagStore(
             settings=settings,
         )
+
+        try:
+            lifecycle = RagDocumentLifecycleService(
+                settings=settings,
+                rag_store=app.state.rag_store,
+            )
+            lifecycle.init_schema()
+            app.state.rag_document_lifecycle = lifecycle
+            transcript_store = RawTranscriptStore(
+                settings=settings,
+            )
+            transcript_store.init_schema()
+            app.state.raw_transcript_store = transcript_store
+            await asyncio.to_thread(
+                lifecycle.sync_index_status,
+                tenant_id=settings.personal_tenant_id,
+                owner_user_id=settings.personal_user_id,
+                knowledge_base_id="kb_finance_basic",
+            )
+        except Exception as exc:
+            logger.warning(
+                "document_registry_startup_sync_failed",
+                error_type=type(exc).__name__,
+            )
 
         app.state.reranker = build_reranker(
             settings=settings,
@@ -161,6 +209,7 @@ async def lifespan(
             # setup_langgraph_checkpointer.py
             # 独立完成。
             setup_checkpointer=False,
+            limits=_production_limits(),
         ) as production_runtime:
             app.state.production_graph_runtime = (
                 production_runtime
@@ -235,11 +284,27 @@ async def request_log_middleware(
     并记录请求耗时和执行结果。
     """
 
+    content_length = request.headers.get("content-length")
+    if content_length:
+        try:
+            body_size = int(content_length)
+        except ValueError:
+            body_size = -1
+        if body_size < 0 or body_size > settings.max_http_body_bytes:
+            return JSONResponse(
+                status_code=413,
+                content={
+                    "error_code": "REQUEST_BODY_TOO_LARGE",
+                    "message": "请求体超过服务允许的大小。",
+                },
+            )
+
+    supplied_request_id = request.headers.get("X-Request-ID", "").strip()
     request_id = (
-        request.headers.get(
-            "X-Request-ID"
-        )
-        or str(uuid.uuid4())
+        supplied_request_id
+        if 0 < len(supplied_request_id) <= 128
+        and supplied_request_id.replace("-", "").replace("_", "").isalnum()
+        else str(uuid.uuid4())
     )
 
     request.state.request_id = request_id
@@ -315,6 +380,7 @@ async def request_log_middleware(
     response.headers[
         "X-Request-ID"
     ] = request_id
+    response.headers["X-Agent-Runtime-Revision"] = PRODUCTION_RUNTIME_REVISION
 
     return response
 
@@ -329,6 +395,7 @@ async def health() -> dict[str, str]:
         "status": "ok",
         "service": settings.app_name,
         "version": settings.app_version,
+        "runtime_revision": PRODUCTION_RUNTIME_REVISION,
     }
 
 
@@ -459,12 +526,6 @@ async def production_graph_health(
     }
 
 
-# 旧版普通 Agent 接口：
-# POST /api/chat
-app.include_router(
-    chat_router
-)
-
 # 记忆相关接口。
 app.include_router(
     memory.router
@@ -475,13 +536,7 @@ app.include_router(
     knowledge_router
 )
 
-# Stage 4.1 旧 LangGraph 接口：
-# POST /api/chat/graph
-app.include_router(
-    chat_graph.router
-)
-
-# Stage 4.2 生产 LangGraph 接口：
+# 唯一生产聊天接口：
 # POST /api/chat/graph-v2
 app.include_router(
     chat_graph_v2.router

@@ -27,6 +27,7 @@ class RagCitationPayload(BaseModel):
     # 分数类型和展示字符串。
     score_type: str = "normalized_hybrid_score_0_100"
     score_display: str | None = None
+    scores: dict[str, Any] = Field(default_factory=dict)
 
     # 检索调试信息。
     metadata: dict[str, Any] = Field(default_factory=dict)

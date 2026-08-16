@@ -96,6 +96,59 @@ class ToolCallRequest(BaseModel):
 
     arguments: dict[str, Any] = Field(default_factory=dict)
 
+    step_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=80,
+        pattern=r"^[a-zA-Z][a-zA-Z0-9_]*$",
+    )
+
+    depends_on: list[str] = Field(default_factory=list, max_length=8)
+
+    @property
+    def effective_step_id(self) -> str:
+        return self.step_id or self.tool_call_id
+
+
+def iter_typed_references(value: Any):
+    """Yield strict references shaped as {"$ref": {"step_id": ..., "path": [...]}}."""
+    if isinstance(value, dict):
+        if set(value) == {"$ref"} and isinstance(value["$ref"], dict):
+            payload = value["$ref"]
+            if set(payload).issubset({"step_id", "path"}) and payload.get("step_id"):
+                path = payload.get("path") or []
+                if not isinstance(path, list) or not all(isinstance(item, (str, int)) for item in path):
+                    raise ValueError("typed reference path must be a string/integer list")
+                yield str(payload["step_id"]), list(path)
+                return
+        for child in value.values():
+            yield from iter_typed_references(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from iter_typed_references(child)
+
+
+def resolve_typed_references(value: Any, outputs: dict[str, Any]) -> Any:
+    if isinstance(value, dict):
+        references = list(iter_typed_references(value))
+        if set(value) == {"$ref"} and references:
+            step_id, path = references[0]
+            if step_id not in outputs:
+                raise KeyError(f"dependency output is unavailable: {step_id}")
+            resolved = outputs[step_id]
+            for segment in path:
+                if isinstance(resolved, dict) and segment in resolved:
+                    resolved = resolved[segment]
+                elif isinstance(resolved, list) and isinstance(segment, int):
+                    resolved = resolved[segment]
+                else:
+                    raise KeyError(f"invalid dependency output path: {step_id}.{path}")
+            return resolved
+        return {key: resolve_typed_references(child, outputs) for key, child in value.items()}
+    if isinstance(value, list):
+        return [resolve_typed_references(child, outputs) for child in value]
+    return value
+
 
 class PlannerDecision(BaseModel):
     """
@@ -163,4 +216,39 @@ class PlannerDecision(BaseModel):
                 "只有 action=clarify 时才能提供 clarification_question。"
             )
 
+        step_ids = [call.effective_step_id for call in self.tool_calls]
+        if len(step_ids) != len(set(step_ids)):
+            raise ValueError("tool call step_id values must be unique")
+        known_steps = set(step_ids)
+        dependencies = {
+            call.effective_step_id: set(call.depends_on)
+            for call in self.tool_calls
+        }
+        for call in self.tool_calls:
+            step_id = call.effective_step_id
+            if step_id in dependencies[step_id]:
+                raise ValueError(f"step cannot depend on itself: {step_id}")
+            unknown = dependencies[step_id] - known_steps
+            if unknown:
+                raise ValueError(f"unknown dependency for {step_id}: {sorted(unknown)}")
+            referenced = {ref_step for ref_step, _ in iter_typed_references(call.arguments)}
+            if not referenced.issubset(dependencies[step_id]):
+                raise ValueError(
+                    f"typed references must be declared in depends_on for {step_id}: "
+                    f"{sorted(referenced - dependencies[step_id])}"
+                )
+        visiting: set[str] = set()
+        visited: set[str] = set()
+        def visit(step_id: str) -> None:
+            if step_id in visiting:
+                raise ValueError("tool dependency graph contains a cycle")
+            if step_id in visited:
+                return
+            visiting.add(step_id)
+            for dependency in dependencies.get(step_id, set()):
+                visit(dependency)
+            visiting.remove(step_id)
+            visited.add(step_id)
+        for step_id in step_ids:
+            visit(step_id)
         return self

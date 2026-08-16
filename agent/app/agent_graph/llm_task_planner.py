@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 from dataclasses import dataclass, field
 from typing import Any, Protocol
@@ -36,12 +37,14 @@ logger = get_logger(__name__)
 PLANNER_CLARIFY_TOOL = "planner_request_clarification"
 PLANNER_FINISH_TOOL = "planner_finish"
 PLANNER_FALLBACK_TOOL = "planner_fallback"
+PLANNER_SUBMIT_PLAN_TOOL = "planner_submit_tool_plan"
 
 CONTROL_TOOL_NAMES = frozenset(
     {
         PLANNER_CLARIFY_TOOL,
         PLANNER_FINISH_TOOL,
         PLANNER_FALLBACK_TOOL,
+        PLANNER_SUBMIT_PLAN_TOOL,
     }
 )
 
@@ -81,6 +84,13 @@ class PlannerRequest:
     )
 
     review_feedback: str = ""
+    previous_plan: dict[str, Any] = field(default_factory=dict)
+    plan_attempt_in_round: int = 1
+    plan_repair_count: int = 0
+    completed_execution_rounds: int = 0
+    target_execution_round: int = 1
+    replan_count: int = 0
+    last_execution_observation: dict[str, Any] = field(default_factory=dict)
 
     allowed_tool_names: frozenset[str] | None = None
     allowed_tool_groups: frozenset[str] | None = None
@@ -134,6 +144,36 @@ class PlannerInvocationResult(BaseModel):
 
 class PlannerProtocolError(ValueError):
     pass
+
+
+def plan_semantic_signature(value: PlannerDecision | dict[str, Any]) -> str:
+    """Stable plan identity that ignores regenerated call IDs and versions."""
+    decision = (
+        value
+        if isinstance(value, PlannerDecision)
+        else PlannerDecision.model_validate(value)
+    )
+    payload = {
+        "action": decision.action,
+        "tool_calls": [
+            {
+                "step_id": call.step_id,
+                "tool_name": call.tool_name,
+                "arguments": call.arguments,
+                "depends_on": call.depends_on,
+            }
+            for call in decision.tool_calls
+        ],
+        "clarification_question": decision.clarification_question,
+    }
+    canonical = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 class PlannerPlainTextRecovery(ValueError):
@@ -470,6 +510,74 @@ def _control_tool_definitions() -> list[dict[str, Any]]:
         {
             "type": "function",
             "function": {
+                "name": PLANNER_SUBMIT_PLAN_TOOL,
+                "description": (
+                    "提交一个带显式 step_id、depends_on 和类型化结果引用的"
+                    "业务工具执行计划。多工具并行或存在数据依赖时必须使用。"
+                ),
+                "parameters": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "steps": {
+                            "type": "array",
+                            "minItems": 1,
+                            "maxItems": 4,
+                            "items": {
+                                "type": "object",
+                                "additionalProperties": False,
+                                "properties": {
+                                    "step_id": {
+                                        "type": "string",
+                                        "pattern": "^[a-zA-Z][a-zA-Z0-9_]*$",
+                                        "maxLength": 80,
+                                    },
+                                    "tool_name": {
+                                        "type": "string",
+                                        "pattern": "^[a-zA-Z][a-zA-Z0-9_]*$",
+                                        "maxLength": 128,
+                                    },
+                                    "arguments": {
+                                        "type": "object",
+                                        "additionalProperties": True,
+                                    },
+                                    "depends_on": {
+                                        "type": "array",
+                                        "maxItems": 8,
+                                        "items": {"type": "string"},
+                                    },
+                                },
+                                "required": [
+                                    "step_id",
+                                    "tool_name",
+                                    "arguments",
+                                    "depends_on",
+                                ],
+                            },
+                        },
+                        "reason": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 1000,
+                        },
+                        "confidence": {
+                            "type": "string",
+                            "enum": ["low", "medium", "high"],
+                        },
+                        "needs_review": {"type": "boolean"},
+                    },
+                    "required": [
+                        "steps",
+                        "reason",
+                        "confidence",
+                        "needs_review",
+                    ],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": PLANNER_CLARIFY_TOOL,
                 "description": (
                     "缺少完成当前任务所必需的用户信息时，"
@@ -711,6 +819,47 @@ def _parse_control_decision(
     arguments: dict[str, Any],
     plan_version: int,
 ) -> PlannerDecision:
+    if tool_name == PLANNER_SUBMIT_PLAN_TOOL:
+        raw_steps = arguments.get("steps")
+        if not isinstance(raw_steps, list) or not raw_steps:
+            raise PlannerProtocolError(
+                "planner_submit_tool_plan 缺少非空 steps。"
+            )
+        confidence = str(arguments.get("confidence") or "medium").strip()
+        if confidence not in {"low", "medium", "high"}:
+            raise PlannerProtocolError(
+                "planner_submit_tool_plan 的 confidence 不合法。"
+            )
+        calls: list[ToolCallRequest] = []
+        for raw_step in raw_steps:
+            if not isinstance(raw_step, dict):
+                raise PlannerProtocolError("工具计划 step 必须是对象。")
+            calls.append(
+                ToolCallRequest(
+                    tool_call_id=f"call_{uuid4().hex[:16]}",
+                    step_id=str(raw_step.get("step_id") or "").strip(),
+                    tool_name=str(raw_step.get("tool_name") or "").strip(),
+                    arguments=(
+                        raw_step.get("arguments")
+                        if isinstance(raw_step.get("arguments"), dict)
+                        else {}
+                    ),
+                    depends_on=[
+                        str(item).strip()
+                        for item in (raw_step.get("depends_on") or [])
+                    ],
+                )
+            )
+        return PlannerDecision(
+            action="call_tools",
+            tool_calls=calls,
+            decision_reason=str(arguments.get("reason") or "").strip()
+            or "执行结构化工具计划。",
+            confidence=confidence,  # type: ignore[arg-type]
+            needs_review=bool(arguments.get("needs_review", False)),
+            plan_version=plan_version,
+        )
+
     if tool_name == PLANNER_CLARIFY_TOOL:
         question = str(
             arguments.get("question") or ""
@@ -778,6 +927,32 @@ def _parse_control_decision(
     raise PlannerProtocolError(
         f"未知 Planner 控制工具：{tool_name}"
     )
+
+
+def _execution_assistant_message(
+    decision: PlannerDecision,
+) -> dict[str, Any]:
+    """Build the protocol message that matches executable business call IDs."""
+    return {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [
+            {
+                "id": call.tool_call_id,
+                "type": "function",
+                "function": {
+                    "name": call.tool_name,
+                    "arguments": json.dumps(
+                        call.arguments,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                        default=str,
+                    ),
+                },
+            }
+            for call in decision.tool_calls
+        ],
+    }
 
 
 class LLMTaskPlanner:
@@ -890,14 +1065,42 @@ class LLMTaskPlanner:
             {
                 "role": "system",
                 "content": (
-                    f"当前是第 {request.agent_round} 轮规划；"
+                    f"已完成 {request.completed_execution_rounds} 个完整执行轮；"
+                    f"当前计划若调用工具，将创建第 "
+                    f"{request.target_execution_round} 个执行轮；"
+                    f"当前执行重规划次数为 {request.replan_count}；"
                     f"剩余工具调用预算为 "
                     f"{request.remaining_tool_calls}；"
                     f"当前重复错误次数为 "
                     f"{request.repeated_error_count}。"
+                    "Planner 调用和 Reviewer 修订只是当前目标执行轮内的"
+                    "计划尝试，不计为执行轮；只有业务工具实际执行并经过"
+                    " Observe 与 Result Validate 后，执行轮数才增加。"
+                    "若本次调用 planner_finish，则不会凭空创建新的执行轮。"
                 ),
             }
         )
+
+        if request.last_execution_observation:
+            observation_payload = json.dumps(
+                request.last_execution_observation,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                default=str,
+            )
+            messages.append(
+                {
+                    "role": "system",
+                    "content": (
+                        "以下是最近一个完整 Execute -> Observe -> Validate "
+                        "执行轮产生的结构化结果摘要。"
+                        "先判断用户任务是否已经完成；只有确有剩余任务或"
+                        "可修复失败时，才规划新的工具执行轮。\n"
+                        f"<last_execution_observation>{observation_payload}"
+                        "</last_execution_observation>"
+                    ),
+                }
+            )
 
         for history_message in request.history_messages:
             copied = _safe_message_copy(
@@ -935,12 +1138,23 @@ class LLMTaskPlanner:
                 messages.append(copied)
 
         if request.review_feedback.strip():
+            previous_plan = json.dumps(
+                request.previous_plan,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                default=str,
+            )
             messages.append(
                 {
                     "role": "system",
                     "content": (
-                        "计划复核节点要求你修正当前计划：\n"
-                        f"{request.review_feedback.strip()}"
+                        "You are repairing the previous plan, not creating an unrelated plan.\n"
+                        f"PLAN_ATTEMPT_IN_EXECUTION_ROUND={request.plan_attempt_in_round}\n"
+                        f"PLAN_REPAIR_COUNT={request.plan_repair_count}\n"
+                        f"<previous_plan>{previous_plan}</previous_plan>\n"
+                        f"<review_feedback>{request.review_feedback.strip()}</review_feedback>\n"
+                        "Address every actionable review item. Do not return a semantically "
+                        "identical plan. Preserve valid steps and express dependencies structurally."
                     ),
                 }
             )
@@ -1069,6 +1283,15 @@ class LLMTaskPlanner:
                             available_business_tool_names
                         ),
                     )
+                    if (
+                        request.review_feedback.strip()
+                        and request.previous_plan
+                        and plan_semantic_signature(decision)
+                        == plan_semantic_signature(request.previous_plan)
+                    ):
+                        raise PlannerProtocolError(
+                            "repaired plan is semantically identical to the rejected plan"
+                        )
                 except PlannerDecisionConsistencyError as exc:
                     last_protocol_error = str(exc)
                     last_protocol_error_type = (
@@ -1133,7 +1356,11 @@ class LLMTaskPlanner:
 
                     return PlannerInvocationResult(
                         decision=decision,
-                        assistant_message=assistant_message,
+                        assistant_message=(
+                            _execution_assistant_message(decision)
+                            if decision.action == "call_tools"
+                            else assistant_message
+                        ),
                         model=result.get("model"),
                         finish_reason=result.get(
                             "finish_reason",
@@ -1312,6 +1539,21 @@ class LLMTaskPlanner:
                         plan_version=plan_version,
                     )
                 )
+
+                if control_decision.action == "call_tools":
+                    unknown = sorted(
+                        {
+                            call.tool_name
+                            for call in control_decision.tool_calls
+                            if call.tool_name
+                            not in (available_business_tool_names or frozenset())
+                        }
+                    )
+                    if unknown:
+                        raise PlannerProtocolError(
+                            "结构化计划包含未授权或不存在的业务工具："
+                            f"{unknown}"
+                        )
 
                 _validate_decision_consistency(
                     decision=control_decision,

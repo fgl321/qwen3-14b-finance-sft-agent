@@ -40,6 +40,12 @@ class FinalResponsePipelineResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     status: FinalResponseStatus
+    delivery_status: Literal[
+        "validated",
+        "validated_with_limitations",
+        "guard_degraded",
+        "rejected",
+    ] = "validated"
 
     answer: str
 
@@ -51,6 +57,7 @@ class FinalResponsePipelineResult(BaseModel):
     ] = Field(default_factory=list)
 
     output_rewrites: int = Field(default=0, ge=0)
+    citation_regeneration_count: int = Field(default=0, ge=0)
 
     usage: dict[str, Any] = Field(default_factory=dict)
     # 按阶段拆分的模型 token 用量（planner/reviewer/synthesis/output_guard）。

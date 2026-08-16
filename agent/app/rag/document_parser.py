@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -144,6 +145,106 @@ def _extract_pdf_pages(
         # pypdf 回退路径不做 OCR（无法渲染页面），
         # OCR 由 PyMuPDF 主路径覆盖。
     return pages, total_pages
+
+
+def _looks_like_title_line(line: str) -> bool:
+    candidate = line.strip()
+    return bool(
+        4 <= len(candidate) <= 60
+        and re.search(r"[\u4e00-\u9fff]", candidate)
+        and re.search(
+            r"(?:条款|办法|规定|细则|指引|读本|手册|说明|报告|规则)",
+            candidate,
+        )
+    )
+
+
+def _merge_title_lines(lines: list[str]) -> str | None:
+    """Merge a title line with continuation lines such as ``（第二版）``.
+
+    Many Chinese PDFs split ``金融知识普及读本`` and ``（第二版）`` across two
+    lines; keeping only the first line silently drops the edition marker.
+    """
+
+    for index, raw_line in enumerate(lines[:6]):
+        line = raw_line.strip()
+        if not _looks_like_title_line(line):
+            continue
+        merged = line
+        for continuation in lines[index + 1 : index + 3]:
+            piece = continuation.strip()
+            if not piece:
+                continue
+            if re.match(r"^[（(]", piece) and re.search(r"[）)]$", piece):
+                merged += piece
+                continue
+            break
+        return merged
+    return None
+
+
+def _extract_pdf_title(
+    path: Path,
+    first_page_text: str,
+) -> tuple[str | None, list[str]]:
+    """Deterministic title extraction for document identity metadata.
+
+    Prefers an explicit ``《...》`` book title on the first page, then PDF
+    metadata title, then a short first line that looks like a document title.
+    This only enriches Postgres metadata; it never decides document identity
+    through fuzzy/vector matching.
+    """
+
+    file_name = path.name
+    aliases: list[str] = []
+    for value in (file_name, path.stem):
+        if value and value not in aliases:
+            aliases.append(value)
+
+    metadata_title: str | None = None
+    try:
+        import pymupdf as fitz
+    except ImportError:
+        try:
+            import fitz  # type: ignore[no-redef]
+        except ImportError:
+            fitz = None
+
+    if fitz is not None:
+        try:
+            document = fitz.open(str(path))
+            try:
+                raw = (document.metadata or {}).get("title") or ""
+                if raw.strip():
+                    metadata_title = normalize_document_text(raw)
+            finally:
+                document.close()
+        except Exception:
+            metadata_title = None
+
+    extracted: str | None = None
+    if first_page_text:
+        book_matches = re.findall(
+            r"[《]([^》]{2,60})[》]",
+            first_page_text,
+        )
+        if book_matches:
+            extracted = book_matches[0].strip()
+        else:
+            candidate_lines = [
+                line.strip()
+                for line in first_page_text.splitlines()
+                if line.strip()
+            ][:6]
+            extracted = _merge_title_lines(candidate_lines)
+
+    if extracted is None and metadata_title and metadata_title != file_name:
+        extracted = metadata_title
+
+    for value in (extracted, metadata_title):
+        if value and value not in aliases:
+            aliases.append(value)
+    return extracted, aliases
 
 
 def _parse_pdf(path: Path, *, ocr_enabled: bool = True) -> str:
@@ -358,6 +459,13 @@ def _parse_document_with_pages(
             )
         metadata["total_pages"] = total_pages
         metadata["extracted_pages"] = len(extracted)
+        extracted_title, aliases = _extract_pdf_title(
+            path,
+            extracted[0][1],
+        )
+        if extracted_title:
+            metadata["title"] = extracted_title
+        metadata["aliases"] = aliases
         text = "\n\n".join(page_text for _, page_text in extracted)
         pages = [
             ParsedPage(page_number=page_number, text=page_text)
@@ -376,15 +484,24 @@ def _parse_document_with_pages(
                 "图片中没有识别到文字。"
             )
         metadata["source_type"] = "image"
+        metadata["aliases"] = list(
+            dict.fromkeys([path.name, path.stem])
+        )
         return text, [ParsedPage(page_number=1, text=text)], metadata
 
     if suffix == ".docx":
         text = _parse_docx(path, ocr_enabled=ocr_enabled)
+        metadata["aliases"] = list(
+            dict.fromkeys([path.name, path.stem])
+        )
         if not text.strip():
             raise ValueError("文档没有可提取的文本内容。")
         return text, [ParsedPage(page_number=1, text=text)], metadata
 
     text = parse_document(path)
+    metadata["aliases"] = list(
+        dict.fromkeys([path.name, path.stem])
+    )
     return text, [ParsedPage(page_number=1, text=text)], metadata
 
 

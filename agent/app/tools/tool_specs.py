@@ -12,6 +12,12 @@ ToolRiskLevel = Literal[
     "medium",
     "high",
 ]
+ToolSourceClass = Literal[
+    "pure_math",
+    "user_fact_transform",
+    "domain_heuristic",
+    "external_data",
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,6 +60,8 @@ class ToolSpec:
     side_effect: bool = False
     idempotent: bool = True
     parallel_safe: bool = True
+
+    source_class: ToolSourceClass = "user_fact_transform"
 
     allowed_roles: frozenset[str] = frozenset({"user", "system"})
 
@@ -99,5 +107,52 @@ class ToolSpec:
                 "name": self.name,
                 "description": self.description,
                 "parameters": self.input_model.model_json_schema(),
+                "source_class": self.source_class,
             },
         }
+
+
+def tool_allowed(
+    source_class: str,
+    source_contract: Any,
+) -> bool:
+    """Deterministic source gate: unknown classes fail closed."""
+
+    if source_class == "pure_math":
+        return (
+            getattr(
+                source_contract,
+                "deterministic_derivation",
+                "forbidden",
+            )
+            == "allowed"
+        )
+    if source_class == "user_fact_transform":
+        return (
+            getattr(
+                source_contract,
+                "current_user_facts",
+                "forbidden",
+            )
+            == "allowed"
+            and getattr(
+                source_contract,
+                "deterministic_derivation",
+                "forbidden",
+            )
+            == "allowed"
+        )
+    if source_class == "domain_heuristic":
+        return (
+            getattr(
+                source_contract,
+                "domain_heuristics",
+                "forbidden",
+            )
+            == "allowed"
+        )
+    if source_class == "external_data":
+        return (
+            getattr(source_contract, "web", "forbidden") == "allowed"
+        )
+    return False

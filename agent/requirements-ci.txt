@@ -1,0 +1,18 @@
+# CI/test dependencies. The production-only local embedding model is omitted so
+# pull requests do not download multi-GB weights; integration evaluation uses
+# agent/requirements.txt and the real BGE-M3 service.
+fastapi>=0.115,<1
+httpx>=0.28,<1
+langgraph>=0.4,<2
+langgraph-checkpoint-postgres>=2,<4
+openai>=1.60,<4
+pydantic>=2.10,<3
+pydantic-settings>=2.7,<3
+psycopg[binary]>=3.2,<4
+pypdf>=5,<7
+python-docx>=1.1,<2
+python-multipart>=0.0.18,<1
+qdrant-client>=1.12,<2
+redis>=5,<9
+structlog>=24,<27
+tenacity>=9,<10

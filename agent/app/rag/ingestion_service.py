@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import Callable
 from pathlib import Path
+import time
 from typing import Any
 from uuid import NAMESPACE_URL, uuid5
 
@@ -77,7 +79,17 @@ class RagIngestionService:
         knowledge_base_id: str,
         visibility: str = "private",
         original_file_name: str | None = None,
+        progress_callback: Callable[[str, float, str], None] | None = None,
     ) -> dict[str, Any]:
+        started = time.perf_counter()
+        stage_started = started
+        timings: dict[str, float] = {}
+
+        def report(phase: str, percent: float, message: str) -> None:
+            if progress_callback is not None:
+                progress_callback(phase, max(0.0, min(99.0, percent)), message)
+
+        report("parsing", 2, "正在解析文档页面")
         legacy_parsed = self.parser.parse(
             file_path=file_path,
             tenant_id=tenant_id,
@@ -86,6 +98,9 @@ class RagIngestionService:
             visibility=visibility,
             display_file_name=original_file_name,
         )
+        timings["parse_seconds"] = round(time.perf_counter() - stage_started, 3)
+        report("classifying", 14, "正在识别知识来源与可信度")
+        stage_started = time.perf_counter()
 
         # DocumentParser.parse() 返回旧版 str 兼容对象，没有 .meta。
         # 这里把它转换成 rag_types.ParsedDocument，供父子分块器使用。
@@ -108,13 +123,35 @@ class RagIngestionService:
             or getattr(legacy_parsed, "file_name", None)
             or Path(file_path).name
         )
+        parsed_meta = (
+            getattr(legacy_parsed, "metadata", None) or {}
+        )
+        extracted_title = str(
+            parsed_meta.get("title") or ""
+        ).strip()
+        title = extracted_title or display_file_name
+        aliases = [
+            str(item).strip()
+            for item in (parsed_meta.get("aliases") or [])
+            if str(item).strip()
+        ]
+        for value in (
+            display_file_name,
+            Path(display_file_name).stem,
+            title,
+        ):
+            if value and value not in aliases:
+                aliases.append(value)
         source_metadata = self.source_classifier.classify(
             text=str(legacy_parsed)[:16000],
             file_name=display_file_name,
         )
+        timings["classify_seconds"] = round(time.perf_counter() - stage_started, 3)
         meta = DocumentMeta(
             document_id=document_id,
             file_name=display_file_name,
+            title=title,
+            aliases=aliases,
             file_sha256=file_sha256,
             tenant_id=str(tenant_id),
             owner_user_id=str(owner_user_id),
@@ -143,9 +180,6 @@ class RagIngestionService:
             ],
         )
 
-        parsed_meta = (
-            getattr(legacy_parsed, "metadata", None) or {}
-        )
         total_pages = int(
             parsed_meta.get("total_pages") or 0
         )
@@ -168,7 +202,10 @@ class RagIngestionService:
             page_count=len(parsed.pages),
         )
 
+        report("chunking", 18, "正在执行父子分块")
+        stage_started = time.perf_counter()
         chunks = self.chunker.chunk(parsed)
+        timings["chunk_seconds"] = round(time.perf_counter() - stage_started, 3)
 
         counter = Counter(
             chunk.metadata.get("chunk_type")
@@ -198,16 +235,45 @@ class RagIngestionService:
             ),
         )
 
+        def vector_progress(phase: str, current: int, total: int) -> None:
+            ratio = current / max(total, 1)
+            if phase == "embedding":
+                report(
+                    "embedding",
+                    20 + ratio * 65,
+                    f"GPU 向量化 {current}/{total} 个唯一子块",
+                )
+            else:
+                report(
+                    "indexing",
+                    85 + ratio * 13,
+                    f"写入向量库 {current}/{total} 个分块",
+                )
+
+        report("embedding", 20, "正在批量生成向量")
+        stage_started = time.perf_counter()
         qdrant_result = self.store.upsert_chunks(
             chunks=chunks,
             embedding_provider=self.embedding_provider,
-            batch_size=64,
+            batch_size=int(
+                getattr(self.settings, "rag_qdrant_upsert_batch_size", 128)
+            ),
+            embedding_batch_size=int(
+                getattr(self.settings, "rag_ingest_embedding_batch_size", 128)
+            ),
+            progress_callback=vector_progress,
+        )
+        timings["embed_and_index_seconds"] = round(
+            time.perf_counter() - stage_started,
+            3,
         )
 
         qdrant_result["delete_existing"] = delete_existing_result
         qdrant_result["embedding_provider"] = self.settings.embedding_provider
 
         point_count = self.store.count_points()
+        timings["total_seconds"] = round(time.perf_counter() - started, 3)
+        report("finalizing", 99, "正在完成文档索引")
 
         logger.info(
             "rag_document_ingested",
@@ -232,5 +298,6 @@ class RagIngestionService:
                 "skipped_image_pages": skipped_image_pages,
             },
             "qdrant": qdrant_result,
+            "timings": timings,
             "point_count_after_ingest": point_count,
         }

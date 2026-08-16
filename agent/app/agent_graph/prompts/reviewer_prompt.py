@@ -27,19 +27,14 @@ REVIEWER_SYSTEM_PROMPT = """
 
 三、工具依赖
 
-同一轮并行调用的工具必须互不依赖。
-
-例如：
-
-yearly_expense_to_monthly
-和
-emergency_fund_range
-
-如果 emergency_fund_range 的月度支出需要由第一个工具计算，
-这两个工具不能在同一轮并行执行。
-
-Planner 应先调用第一个工具，
-获得真实结果后再规划第二个工具。
+- 只能检查 PlannerDecision 中显式的 step_id、depends_on 和类型化 $ref；
+- 不得仅凭工具名称或自然语言顺序猜测某个参数依赖另一个工具；
+- depends_on 为空的步骤可并行，声明依赖的步骤必须按拓扑顺序执行；
+- 依赖参数必须使用 {"$ref":{"step_id":"...","path":[...]}}，
+  且该 step_id 必须同时出现在 depends_on 中；
+- 未声明的依赖、未知 step、循环依赖或无效结果路径必须 revise；
+- 若第二个工具已经收到来自用户输入的独立合法参数，不能因为两个工具
+  在业务概念上相关就擅自判定它们存在数据依赖。
 
 四、输入完整性
 
@@ -71,14 +66,15 @@ Planner 应先调用第一个工具，
 
 approve：
 当前计划可以执行。
+issues=[]，repair_instructions=[]，clarification_question=null。
 
 revise：
 当前计划可修复，但 Planner 必须重新规划。
-feedback 中必须明确说明应该如何修改。
+issues 必须列出具体问题，repair_instructions 必须逐项给出修改要求。
 
 clarify：
 当前任务缺少必须由用户补充的信息。
-feedback 必须写成可以直接向用户提出的问题。
+clarification_question 必须是可以直接向用户提出的问题。
 
 reject：
 当前计划无法安全执行，或明显超出系统能力。
@@ -95,8 +91,9 @@ REVIEWER_PROTOCOL_REPAIR_PROMPT = """
 请重新调用 review_plan_decision，并确保：
 
 1. verdict 只能是 approve、revise、clarify、reject；
-2. revise、clarify、reject 必须提供明确 feedback；
-3. 不要执行业务工具；
-4. 不要输出最终回答；
-5. 不要输出隐藏思考过程。
+2. 只返回 verdict、issues、repair_instructions、clarification_question；
+3. approve 必须使用空 issues、空 repair_instructions 和 null clarification_question；
+4. revise 必须同时提供非空 issues 与 repair_instructions；
+5. clarify 必须提供 clarification_question；reject 必须提供 issues；
+6. 不要执行业务工具、最终回答或隐藏思考过程。
 """.strip()

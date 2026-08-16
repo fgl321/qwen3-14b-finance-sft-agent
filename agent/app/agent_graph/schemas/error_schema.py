@@ -24,6 +24,7 @@ AgentErrorStage = Literal[
     "api",
     "service",
     "graph",
+    "rag",
     "agent_loop",
     "planner",
     "reviewer",

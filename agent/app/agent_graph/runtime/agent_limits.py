@@ -18,6 +18,11 @@ class AgentLimits:
 
     max_same_error_count: int = 2
     max_consecutive_no_progress_rounds: int = 2
+    # Explicit workflow liveness guard.  Plan repairs are attempts inside the
+    # current execution round and never consume max_agent_rounds.
+    max_plan_repairs_per_execution_round: int = 4
+    # Legacy aggregate AgentToolLoop compatibility only.  The explicit
+    # production workflow must not use this field as an execution-round cap.
     max_plan_revisions: int = 2
     max_output_rewrites: int = 3
 
@@ -35,6 +40,9 @@ class AgentLimits:
             "max_same_error_count": self.max_same_error_count,
             "max_consecutive_no_progress_rounds": (
                 self.max_consecutive_no_progress_rounds
+            ),
+            "max_plan_repairs_per_execution_round": (
+                self.max_plan_repairs_per_execution_round
             ),
             "max_plan_revisions": self.max_plan_revisions,
             "max_output_rewrites": self.max_output_rewrites,

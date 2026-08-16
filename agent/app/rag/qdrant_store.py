@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import os
 from datetime import datetime, timezone
+from collections.abc import Callable
 from typing import Any
 
 # 必须放在 qdrant_client 导入之前。
@@ -39,6 +41,16 @@ from app.rag.rag_types import RagChunk, RetrievedChunk
 logger = get_logger(__name__)
 
 
+def _query_fingerprint(query: str) -> dict[str, Any]:
+    text = str(query or "")
+    return {
+        "query_hash": hashlib.sha256(
+            text.encode("utf-8")
+        ).hexdigest()[:16],
+        "query_length": len(text),
+    }
+
+
 class QdrantRagStore:
     """
     RAG 向量库访问层。
@@ -73,7 +85,9 @@ class QdrantRagStore:
         *,
         chunks: list[RagChunk],
         embedding_provider: EmbeddingProvider,
-        batch_size: int = 64,
+        batch_size: int = 128,
+        embedding_batch_size: int = 128,
+        progress_callback: Callable[[str, int, int], None] | None = None,
     ) -> dict[str, Any]:
         if not chunks:
             return {
@@ -87,35 +101,65 @@ class QdrantRagStore:
         batch_count = 0
         ingested_at = datetime.now(timezone.utc).isoformat()
 
-        for start in range(0, len(chunks), batch_size):
-            batch_chunks = chunks[start: start + batch_size]
-            texts = [chunk.text for chunk in batch_chunks]
+        # Parent points are payload containers retrieved by id after a child
+        # match; search filters never score them. Embedding all parent text was
+        # therefore pure overhead (about 20% on typical parent/child indexes).
+        # Only unique child text is embedded; repeated headers/footers reuse the
+        # same vector. Parent points receive a zero dense vector solely to keep
+        # the collection schema satisfied.
+        child_chunks = [
+            chunk
+            for chunk in chunks
+            if chunk.metadata.get("chunk_type") != "parent"
+        ]
+        unique_child_texts = list(dict.fromkeys(chunk.text for chunk in child_chunks))
+        embedding_by_text: dict[str, TextEmbedding] = {}
+        embedding_batch_size = max(1, int(embedding_batch_size))
+        for start in range(0, len(unique_child_texts), embedding_batch_size):
+            texts = unique_child_texts[start : start + embedding_batch_size]
             embeddings = embedding_provider.embed_documents(texts)
-
-            if len(embeddings) != len(batch_chunks):
+            if len(embeddings) != len(texts):
                 raise ValueError(
-                    "embedding 数量和 chunk 数量不一致："
-                    f"embeddings={len(embeddings)}, chunks={len(batch_chunks)}"
+                    "embedding 数量和唯一子块数量不一致："
+                    f"embeddings={len(embeddings)}, texts={len(texts)}"
+                )
+            embedding_by_text.update(zip(texts, embeddings))
+            if progress_callback is not None:
+                progress_callback(
+                    "embedding",
+                    min(start + len(texts), len(unique_child_texts)),
+                    len(unique_child_texts),
                 )
 
+        zero_dense = [0.0] * int(
+            getattr(self.settings, "rag_dense_vector_size", 1024)
+        )
+
+        for start in range(0, len(chunks), batch_size):
+            batch_chunks = chunks[start: start + batch_size]
             points: list[PointStruct] = []
 
-            for chunk, embedding in zip(batch_chunks, embeddings):
+            for chunk in batch_chunks:
                 payload = self._chunk_to_payload(
                     chunk=chunk,
                     ingested_at=ingested_at,
                 )
-
+                is_parent = chunk.metadata.get("chunk_type") == "parent"
+                embedding = None if is_parent else embedding_by_text[chunk.text]
+                vectors: dict[str, Any] = {
+                    self.dense_vector_name: (
+                        zero_dense if embedding is None else embedding.dense
+                    ),
+                }
+                if embedding is not None:
+                    vectors[self.sparse_vector_name] = SparseVector(
+                        indices=embedding.sparse.indices,
+                        values=embedding.sparse.values,
+                    )
                 points.append(
                     PointStruct(
                         id=chunk.chunk_id,
-                        vector={
-                            self.dense_vector_name: embedding.dense,
-                            self.sparse_vector_name: SparseVector(
-                                indices=embedding.sparse.indices,
-                                values=embedding.sparse.values,
-                            ),
-                        },
+                        vector=vectors,
                         payload=payload,
                     )
                 )
@@ -128,11 +172,20 @@ class QdrantRagStore:
 
             total_upserted += len(points)
             batch_count += 1
+            if progress_callback is not None:
+                progress_callback(
+                    "indexing",
+                    min(start + len(points), len(chunks)),
+                    len(chunks),
+                )
 
         return {
             "ok": True,
             "upserted_count": total_upserted,
             "batch_count": batch_count,
+            "embedded_unique_child_count": len(unique_child_texts),
+            "reused_child_embedding_count": len(child_chunks) - len(unique_child_texts),
+            "skipped_parent_embedding_count": len(chunks) - len(child_chunks),
             "collection_name": self.collection_name,
             "ingested_at": ingested_at,
         }
@@ -185,7 +238,7 @@ class QdrantRagStore:
 
         logger.info(
             "rag_hybrid_child_search_finished",
-            query=query,
+            **_query_fingerprint(query),
             dense_hit_count=len(dense_hits),
             sparse_hit_count=len(sparse_hits),
             fused_hit_count=len(fused_hits),
@@ -203,7 +256,7 @@ class QdrantRagStore:
                 if fallback:
                     logger.info(
                         "rag_document_scope_positional_fallback",
-                        query=query,
+                        **_query_fingerprint(query),
                         document_ids=list(document_ids),
                         fallback_count=len(fallback),
                     )
@@ -363,10 +416,34 @@ class QdrantRagStore:
                         for chunk in child_candidates
                     ]
 
-                reranked_children = reranker.rerank(
-                    query=query,
-                    candidates=child_candidates,
-                )
+                try:
+                    reranked_children = reranker.rerank(
+                        query=query,
+                        candidates=child_candidates,
+                    )
+                except Exception as exc:
+                    # Retrieval already produced a deterministic RRF ranking.
+                    # A remote/local cross-encoder outage must not erase valid
+                    # evidence or turn "reranker failed" into "no evidence".
+                    reranked_children = []
+                    retrieved = [
+                        chunk.model_copy(
+                            update={
+                                "metadata": {
+                                    **(chunk.metadata or {}),
+                                    "rerank_status": "fallback_rrf",
+                                    "rerank_error_type": type(exc).__name__,
+                                }
+                            }
+                        )
+                        for chunk in retrieved
+                    ]
+                    logger.warning(
+                        "rag_rerank_failed_fallback_to_rrf",
+                        error_type=type(exc).__name__,
+                        error=str(exc)[:300],
+                        candidate_count=len(child_candidates),
+                    )
 
                 if reranked_children:
                     best_prob_by_parent: dict[str, float] = {}
@@ -442,7 +519,7 @@ class QdrantRagStore:
                     retrieved = normalized
                     logger.info(
                         "rag_rerank_applied",
-                        query=query,
+                        **_query_fingerprint(query),
                         before=before_rerank,
                         after=len(normalized),
                         rerank_level="child",
@@ -686,6 +763,12 @@ class QdrantRagStore:
                 current = {
                     "document_id": document_id,
                     "file_name": payload.get("file_name"),
+                    "title": (
+                        payload.get("document_title")
+                        or payload.get("title")
+                        or payload.get("file_name")
+                    ),
+                    "aliases": payload.get("aliases") or [],
                     "file_sha256": payload.get("file_sha256"),
                     "tenant_id": payload.get("tenant_id"),
                     "owner_user_id": payload.get("owner_user_id"),
@@ -705,6 +788,16 @@ class QdrantRagStore:
 
             if chunk_type == "parent":
                 current["file_name"] = payload.get("file_name") or current.get("file_name")
+                current["title"] = (
+                    payload.get("document_title")
+                    or payload.get("title")
+                    or current.get("title")
+                )
+                current["aliases"] = (
+                    payload.get("aliases")
+                    or current.get("aliases")
+                    or []
+                )
                 current["file_sha256"] = payload.get("file_sha256") or current.get("file_sha256")
                 current["tenant_id"] = payload.get("tenant_id") or current.get("tenant_id")
                 current["owner_user_id"] = payload.get("owner_user_id") or current.get("owner_user_id")
@@ -1047,11 +1140,28 @@ class QdrantRagStore:
         ingested_at: str,
     ) -> dict[str, Any]:
         chunk_type = chunk.metadata.get("chunk_type")
+        title = str(
+            chunk.metadata.get("title")
+            or chunk.metadata.get("document_title")
+            or chunk.file_name
+            or ""
+        )
+        aliases = chunk.metadata.get("aliases") or []
+        if isinstance(aliases, str):
+            aliases = [aliases]
+        aliases = [
+            str(item)
+            for item in aliases
+            if str(item).strip()
+        ]
 
         return {
             "chunk_id": chunk.chunk_id,
             "parent_id": chunk.parent_id,
             "document_id": chunk.document_id,
+            "document_title": title,
+            "title": title,
+            "aliases": aliases,
             "tenant_id": chunk.tenant_id,
             "owner_user_id": chunk.owner_user_id,
             "knowledge_base_id": chunk.knowledge_base_id,

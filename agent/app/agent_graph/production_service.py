@@ -108,6 +108,7 @@ class ProductionFinanceGraphService:
             str,
             Any,
         ] | None = None,
+        citations: list[dict[str, Any]] | None = None,
         allowed_tool_names: list[
             str
         ] | None = None,
@@ -180,6 +181,7 @@ class ProductionFinanceGraphService:
                 "risk_level": "low",
             }
         )
+        final_citations = list(citations or [])
         final_allowed_tool_names = sorted(
             {
                 str(item).strip()
@@ -213,6 +215,7 @@ class ProductionFinanceGraphService:
                 final_context_summary
             ),
             "route_context": final_route_context,
+            "citations": final_citations,
             "allowed_tool_names": (
                 final_allowed_tool_names
             ),
@@ -307,6 +310,8 @@ class ProductionFinanceGraphService:
                 "route_context": (
                     final_route_context
                 ),
+
+                "citations": final_citations,
 
                 "allowed_tool_names": (
                     final_allowed_tool_names

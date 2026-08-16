@@ -70,11 +70,100 @@ class PlanReviewInvocationResult(BaseModel):
 
     protocol_repaired: bool = False
 
+    semantic_consistency_checked: bool = False
+
+    verdict_normalized: bool = False
+
     error: str | None = None
 
 
 class ReviewerProtocolError(ValueError):
     pass
+
+
+_UNAMBIGUOUS_APPROVAL_MARKERS = (
+    "予以通过",
+    "审核通过",
+    "复核通过",
+    "无需修改",
+    "不需要修改",
+    "无需补充",
+    "不需要补充",
+    "可直接执行",
+    "可以直接执行",
+    "同意执行",
+    "计划可以执行",
+    "approve",
+    "approved",
+    "ready to execute",
+)
+
+_UNAMBIGUOUS_BLOCKING_MARKERS = (
+    "必须修改",
+    "需要修改",
+    "应当修改",
+    "修改后",
+    "重新规划",
+    "修改后再执行",
+    "不能执行",
+    "不可执行",
+    "暂不执行",
+    "不予通过",
+    "审核不通过",
+    "复核不通过",
+    "必须补充",
+    "需要补充",
+    "缺少必需",
+    "未获授权",
+    "unauthorized",
+    "must revise",
+    "revision required",
+    "do not execute",
+)
+
+
+def _ensure_verdict_feedback_consistency(
+    decision: ReviewDecision,
+) -> tuple[ReviewDecision, bool]:
+    """Reject a structurally valid but semantically contradictory review."""
+
+    feedback = " ".join(decision.feedback.lower().split())
+    if not feedback:
+        return decision, False
+
+    approves = any(
+        marker in feedback
+        for marker in _UNAMBIGUOUS_APPROVAL_MARKERS
+    )
+    blocking_feedback = feedback
+    for marker in _UNAMBIGUOUS_APPROVAL_MARKERS:
+        blocking_feedback = blocking_feedback.replace(marker, "")
+    blocks = any(
+        marker in blocking_feedback
+        for marker in _UNAMBIGUOUS_BLOCKING_MARKERS
+    )
+
+    if decision.verdict == "approve" and blocks:
+        raise ReviewerProtocolError(
+            "verdict=approve，但 feedback 要求修改、补充或禁止执行。"
+        )
+
+    if decision.verdict in {"revise", "clarify", "reject"}:
+        if approves and blocks:
+            raise ReviewerProtocolError(
+                f"verdict={decision.verdict}，但 feedback 同时表达通过与阻止执行。"
+            )
+        if approves:
+            # The structured field can be damaged by protocol repair while the
+            # reviewer's final language remains unequivocally approving.  Use
+            # the unambiguous final conclusion and expose the normalization in
+            # the audit record instead of deadlocking the executor.
+            return (
+                decision.model_copy(update={"verdict": "approve"}),
+                True,
+            )
+
+    return decision, False
 
 
 class PlanReviewPolicy:
@@ -98,6 +187,7 @@ class PlanReviewPolicy:
         decision: PlannerDecision,
         route_context: dict[str, Any],
         repeated_error_count: int,
+        repairable_schema_error: bool = False,
     ) -> bool:
         if decision.needs_review:
             return True
@@ -105,13 +195,10 @@ class PlanReviewPolicy:
         if decision.action != "call_tools":
             return False
 
-        if len(decision.tool_calls) > 1:
-            return True
-
         if decision.confidence == "low":
             return True
 
-        if repeated_error_count > 0:
+        if repeated_error_count > 0 and not repairable_schema_error:
             return True
 
         route_risk = str(
@@ -166,19 +253,26 @@ def _review_tool_definition() -> dict[str, Any]:
                             "reject",
                         ],
                     },
-                    "feedback": {
-                        "type": "string",
-                        "description": (
-                            "复核依据或修改要求。"
-                            "approve 时可为空字符串；"
-                            "其他结论必须明确说明原因。"
-                        ),
-                        "maxLength": 1500,
+                    "issues": {
+                        "type": "array",
+                        "items": {"type": "string", "maxLength": 300},
+                        "maxItems": 12,
+                    },
+                    "repair_instructions": {
+                        "type": "array",
+                        "items": {"type": "string", "maxLength": 300},
+                        "maxItems": 12,
+                    },
+                    "clarification_question": {
+                        "type": ["string", "null"],
+                        "maxLength": 500,
                     },
                 },
                 "required": [
                     "verdict",
-                    "feedback",
+                    "issues",
+                    "repair_instructions",
+                    "clarification_question",
                 ],
             },
         },
@@ -297,12 +391,16 @@ class LLMPlanReviewer:
         decision: PlannerDecision,
         route_context: dict[str, Any],
         repeated_error_count: int,
+        repairable_schema_error: bool = False,
     ) -> bool:
         return self.policy.should_review(
             decision=decision,
             route_context=route_context,
             repeated_error_count=(
                 repeated_error_count
+            ),
+            repairable_schema_error=(
+                repairable_schema_error
             ),
         )
 
@@ -462,12 +560,11 @@ class LLMPlanReviewer:
                 )
 
                 return PlanReviewInvocationResult(
-                    decision=ReviewDecision(
-                        verdict="reject",
-                        feedback=(
-                            "计划复核服务当前不可用，"
-                            "不能安全执行该计划。"
-                        ),
+                    decision=_with_deterministic_feedback(
+                        ReviewDecision(
+                            verdict="reject",
+                            issues=["计划复核服务当前不可用，不能安全执行该计划。"],
+                        )
                     ),
                     attempts=attempt_index,
                     protocol_repaired=(
@@ -481,10 +578,13 @@ class LLMPlanReviewer:
             )
 
             try:
-                review_decision = (
+                review_decision, verdict_normalized = (
                     self._parse_assistant_message(
                         assistant_message
                     )
+                )
+                review_decision = _with_deterministic_feedback(
+                    review_decision
                 )
             except ReviewerProtocolError as exc:
                 last_protocol_error = str(exc)
@@ -540,15 +640,16 @@ class LLMPlanReviewer:
                 protocol_repaired=(
                     attempt_index > 1
                 ),
+                semantic_consistency_checked=True,
+                verdict_normalized=verdict_normalized,
             )
 
         return PlanReviewInvocationResult(
-            decision=ReviewDecision(
-                verdict="reject",
-                feedback=(
-                    "Reviewer 连续返回无效协议，"
-                    "不能安全执行当前计划。"
-                ),
+            decision=_with_deterministic_feedback(
+                ReviewDecision(
+                    verdict="reject",
+                    issues=["Reviewer 连续返回无效协议，不能安全执行当前计划。"],
+                )
             ),
             attempts=total_attempts,
             protocol_repaired=(
@@ -560,7 +661,7 @@ class LLMPlanReviewer:
     def _parse_assistant_message(
         self,
         assistant_message: dict[str, Any],
-    ) -> ReviewDecision:
+    ) -> tuple[ReviewDecision, bool]:
         if not isinstance(assistant_message, dict):
             raise ReviewerProtocolError(
                 "Reviewer message 不是对象。"
@@ -609,8 +710,8 @@ class LLMPlanReviewer:
             )
 
             try:
-                return ReviewDecision.model_validate(
-                    arguments
+                return _ensure_verdict_feedback_consistency(
+                    ReviewDecision.model_validate(arguments)
                 )
             except Exception as exc:
                 raise ReviewerProtocolError(
@@ -629,10 +730,26 @@ class LLMPlanReviewer:
         try:
             payload = _parse_json_object(content)
 
-            return ReviewDecision.model_validate(
-                payload
+            return _ensure_verdict_feedback_consistency(
+                ReviewDecision.model_validate(payload)
             )
         except Exception as exc:
             raise ReviewerProtocolError(
                 "Reviewer 文本结果不符合协议。"
             ) from exc
+
+
+def _with_deterministic_feedback(
+    decision: ReviewDecision,
+) -> ReviewDecision:
+    if decision.verdict == "approve":
+        feedback = ""
+    elif decision.verdict == "revise":
+        issue_text = "；".join(decision.issues)
+        repair_text = "；".join(decision.repair_instructions)
+        feedback = f"问题：{issue_text}\n修改要求：{repair_text}"
+    elif decision.verdict == "clarify":
+        feedback = str(decision.clarification_question or "").strip()
+    else:
+        feedback = "；".join(decision.issues)
+    return decision.model_copy(update={"feedback": feedback[:1500]})

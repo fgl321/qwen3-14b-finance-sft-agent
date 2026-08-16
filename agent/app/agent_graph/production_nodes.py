@@ -31,6 +31,7 @@ from app.agent_graph.schemas.planner_schema import (
 from app.core.logging import get_logger
 from app.tools.tool_executor import (
     ToolExecutionContext,
+    source_authority_from_route_context,
 )
 
 
@@ -136,6 +137,7 @@ def prepare_production_run_node(
         "route_context": dict(
             state.get("route_context") or {}
         ),
+        "citations": list(state.get("citations") or []),
         "allowed_tool_names": list(
             state.get("allowed_tool_names") or []
         ),
@@ -158,7 +160,46 @@ def prepare_production_run_node(
 
         # 清空上一轮临时状态
         "agent_loop_result": None,
+        "current_decision": None,
+        "current_assistant_message": {},
+        "current_review": {},
+        "current_tool_results": [],
+        "agent_messages": [],
+        "tool_results": [],
+        "tool_traces": [],
+        "planner_invocations": [],
+        "review_invocations": [],
+        "reused_tool_calls": [],
+        "successful_tool_results": {},
+        "error_counts": {},
+        "planner_round": 0,
+        "execution_round": 0,
+        "plan_attempt_in_round": 0,
+        "plan_repair_count": 0,
+        "replan_count": 0,
+        "planner_invocation_count": 0,
+        "last_execution_observation": {},
+        "execution_round_history": [],
+        "total_tool_calls": 0,
+        "reused_tool_call_count": 0,
+        "repeated_error_count": 0,
+        "consecutive_no_progress_rounds": 0,
+        "plan_revision_count": 0,
+        "review_feedback": "",
+        "loop_status": "running",
+        "loop_finish_reason": "",
+        "orchestration_mode": "pending",
+        "node_trace": [],
         "final_response_result": None,
+        "synthesis_result": None,
+        "output_guard_result": None,
+        "rewrite_instructions": "",
+        "output_rewrite_count": 0,
+        "guard_retry_count": 0,
+        "guard_violation_fingerprints": [],
+        "guard_action": "",
+        "model_invocations": [],
+        "usage_by_node": {},
         "status": "running",
         "final_answer": "",
         "finish_reason": "",
@@ -274,6 +315,11 @@ def build_agent_loop_node(
                             )
                             or 12
                         ),
+                        source_authority=(
+                            source_authority_from_route_context(
+                                state.get("route_context")
+                            )
+                        ),
                     )
                 ),
             )
@@ -346,6 +392,43 @@ def build_final_response_node(
                     state["agent_loop_result"]
                 )
             )
+            route_context = dict(
+                state.get("route_context") or {}
+            )
+            retrieval_outcome = dict(
+                route_context.get("retrieval_outcome") or {}
+            )
+            coverage_by_task = {
+                str(item.get("requirement_id") or ""): item
+                for item in (
+                    retrieval_outcome.get("requirement_coverage")
+                    or []
+                )
+            }
+            semantic_route_data = dict(
+                route_context.get("semantic_route") or {}
+            )
+            contract_lines = [
+                "<delivery_contract>",
+                "每个 retrieval task 的当前状态与必须逐条交付的子要求：",
+            ]
+            for task in (
+                semantic_route_data.get("task_requirements") or []
+            ):
+                task_id = str(task.get("id") or "")
+                coverage = coverage_by_task.get(task_id) or {}
+                contract_lines.append(
+                    "- "
+                    + task_id
+                    + ": status="
+                    + str(coverage.get("status") or "not_covered")
+                    + "; required_outputs="
+                    + str(
+                        task.get("required_outputs") or []
+                    )
+                )
+            contract_lines.append("</delivery_contract>")
+            delivery_contract = "\n".join(contract_lines)
 
             result = (
                 await dependencies
@@ -364,7 +447,169 @@ def build_final_response_node(
                             )
                             or ""
                         ),
-                        citations=[],
+                        citations=list(
+                            state.get("citations") or []
+                        ),
+                        allowed_document_ids=list(
+                            route_context.get(
+                                "allowed_document_ids"
+                            )
+                            or []
+                        ),
+                        scope_snapshot=dict(
+                            route_context.get(
+                                "scope_snapshot"
+                            )
+                            or {}
+                        ),
+                        delivery_contract=delivery_contract,
+                        source_authority=(
+                            source_authority_from_route_context(
+                                route_context
+                            )
+                        ),
+                        requirement_observations=list(
+                            retrieval_outcome.get(
+                                "requirement_coverage"
+                            )
+                            or []
+                        ),
+                        result_reference_context={
+                            "resolved_handles": [
+                                str(item.get("handle") or "")
+                                for item in (
+                                    route_context.get(
+                                        "resolved_result_artifacts"
+                                    )
+                                    or []
+                                )
+                            ],
+                            "has_claims": any(
+                                bool(item.get("claims") or [])
+                                for item in (
+                                    route_context.get(
+                                        "resolved_result_artifacts"
+                                    )
+                                    or []
+                                )
+                            ),
+                            "has_citations": any(
+                                bool(item.get("citations") or [])
+                                for item in (
+                                    route_context.get(
+                                        "resolved_result_artifacts"
+                                    )
+                                    or []
+                                )
+                            ),
+                            "has_mutation_intent": bool(
+                                semantic_route_data.get(
+                                    "state_update_only"
+                                )
+                                or semantic_route_data.get(
+                                    "fact_updates"
+                                )
+                                or semantic_route_data.get(
+                                    "constraint_updates"
+                                )
+                            ),
+                            "committed_fact_fields": [
+                                str(fact.get("field") or "")
+                                for fact in (
+                                    dict(
+                                        route_context.get(
+                                            "effective_task_contract"
+                                        )
+                                        or {}
+                                    ).get("canonical_facts")
+                                    or []
+                                )
+                            ],
+                            "current_turn_mutation_fields": list(
+                                dict.fromkeys(
+                                    [
+                                        str(
+                                            patch.get("field")
+                                            or ""
+                                        )
+                                        for patch in (
+                                            (
+                                                semantic_route_data.get(
+                                                    "fact_updates"
+                                                )
+                                                or []
+                                            )
+                                            + (
+                                                semantic_route_data.get(
+                                                    "extracted_facts"
+                                                )
+                                                or []
+                                            )
+                                        )
+                                        if str(
+                                            patch.get("field")
+                                            or ""
+                                        )
+                                    ]
+                                )
+                            ),
+                            "technical_failures": list(
+                                route_context.get(
+                                    "technical_failures"
+                                )
+                                or []
+                            ),
+                            "requirement_observations": list(
+                                (
+                                    route_context.get(
+                                        "retrieval_outcome"
+                                    )
+                                    or {}
+                                ).get("requirement_coverage")
+                                or []
+                            ),
+                        },
+                        canonical_fact_fields=[
+                            str(fact.get("field") or "")
+                            for fact in (
+                                dict(
+                                    route_context.get(
+                                        "effective_task_contract"
+                                    )
+                                    or {}
+                                ).get("canonical_facts")
+                                or []
+                            )
+                        ],
+                        known_derivation_ids=[
+                            str(calc.get("handle") or "")
+                            for artifact in (
+                                route_context.get(
+                                    "resolved_result_artifacts"
+                                )
+                                or []
+                            )
+                            for calc in (
+                                artifact.get("calculations")
+                                or []
+                            )
+                        ],
+                        known_sub_artifact_ids=[
+                            f"{str(artifact.get('handle') or '')}."
+                            f"{str(sub) or ''}"
+                            for artifact in (
+                                route_context.get(
+                                    "resolved_result_artifacts"
+                                )
+                                or []
+                            )
+                            for sub in (
+                                artifact.get(
+                                    "sub_artifact_handles"
+                                )
+                                or []
+                            )
+                        ],
                     )
                 )
             )

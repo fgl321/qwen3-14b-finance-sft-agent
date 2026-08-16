@@ -23,6 +23,12 @@ class PlannerInvocationAudit(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     round_index: int = Field(ge=1)
+    invocation_index: int = Field(default=1, ge=1)
+    completed_execution_rounds: int = Field(default=0, ge=0)
+    target_execution_round: int = Field(default=1, ge=1)
+    creates_execution_round: bool = False
+    plan_repair: bool = False
+    plan_attempt_in_round: int = Field(default=1, ge=1)
 
     action: str
 
@@ -41,6 +47,9 @@ class PlannerInvocationAudit(BaseModel):
         default_factory=list
     )
 
+    plan_signature: str | None = None
+    previous_plan_signature: str | None = None
+
     error: str | None = None
 
 
@@ -48,6 +57,10 @@ class PlanReviewInvocationAudit(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     round_index: int = Field(ge=1)
+    planner_invocation_index: int = Field(default=1, ge=1)
+    target_execution_round: int = Field(default=1, ge=1)
+    plan_attempt_in_round: int = Field(default=1, ge=1)
+    plan_repair_count: int = Field(default=0, ge=0)
 
     verdict: str
     feedback: str = ""
@@ -60,6 +73,10 @@ class PlanReviewInvocationAudit(BaseModel):
     attempts: int = Field(default=1, ge=1)
 
     protocol_repaired: bool = False
+
+    semantic_consistency_checked: bool = False
+
+    verdict_normalized: bool = False
 
     error: str | None = None
 
@@ -149,6 +166,24 @@ class AgentLoopResult(BaseModel):
     ] = Field(default_factory=list)
 
     agent_rounds: int = Field(default=0, ge=0)
+
+    execution_round: int = Field(default=0, ge=0)
+
+    completed_execution_rounds: int = Field(default=0, ge=0)
+
+    target_execution_round: int = Field(default=1, ge=1)
+
+    planner_invocation_count: int = Field(default=0, ge=0)
+
+    plan_attempt_in_round: int = Field(default=0, ge=0)
+
+    plan_repair_count: int = Field(default=0, ge=0)
+
+    replan_count: int = Field(default=0, ge=0)
+
+    execution_round_history: list[dict[str, Any]] = Field(
+        default_factory=list
+    )
 
     total_tool_calls: int = Field(default=0, ge=0)
 

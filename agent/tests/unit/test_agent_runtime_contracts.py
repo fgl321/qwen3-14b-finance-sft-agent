@@ -169,3 +169,17 @@ def test_output_guard_rewrite_should_require_instructions() -> None:
     )
 
     assert result.verdict == "rewrite"
+
+
+def test_agent_error_envelope_accepts_rag_stage() -> None:
+    from app.agent_graph.schemas.error_schema import AgentErrorEnvelope
+
+    envelope = AgentErrorEnvelope(
+        code="RAG_SERVICE_UNAVAILABLE",
+        category="unavailable",
+        stage="rag",
+        message="知识库检索服务暂不可用。",
+        retryable=True,
+    )
+    assert envelope.stage == "rag"
+    assert envelope.retryable is True

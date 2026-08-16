@@ -5,6 +5,7 @@ import pytest
 from app.agent_graph.llm_output_guard import (
     LLMOutputGuard,
     OutputGuardRequest,
+    _detect_claim_evidence_attribution_mismatches,
     deterministic_output_flags,
 )
 from app.agent_graph.schemas.loop_schema import (
@@ -212,3 +213,441 @@ async def test_guard_failure_should_fallback():
 
     assert result.result.verdict == "fallback"
     assert result.error == "ConnectionError"
+
+
+def test_claim_evidence_attribution_mismatch_detected():
+    citations = [
+        {
+            "citation_id": 5,
+            "quote": (
+                "第四十七条 本条例自2013年3月15日起施行。\n"
+                "附录五\n"
+                "存款保险条例\n"
+                "第一条 本条例自2015年5月1日起施行。"
+            ),
+        }
+    ]
+    synthesis = SynthesisResult(
+        answer="《存款保险条例》自2013年3月15日起施行 [5]",
+        used_tool_call_ids=[],
+        used_citation_ids=["5"],
+        uncertainty=None,
+        disclaimer_required=False,
+    )
+    flags = deterministic_output_flags(
+        synthesis,
+        citations=citations,
+    )
+    assert "claim_evidence_attribution_mismatch" in flags
+
+
+def test_claim_evidence_attribution_ok_when_same_sentence():
+    citations = [
+        {
+            "citation_id": 5,
+            "quote": (
+                "2015年5月1日，我国《存款保险条例》施行，"
+                "存款保险制度正式建立。"
+            ),
+        }
+    ]
+    synthesis = SynthesisResult(
+        answer="《存款保险条例》自2015年5月1日起施行 [5]",
+        used_tool_call_ids=[],
+        used_citation_ids=["5"],
+        uncertainty=None,
+        disclaimer_required=False,
+    )
+    assert (
+        _detect_claim_evidence_attribution_mismatches(
+            answer=synthesis.answer,
+            citations=citations,
+        )
+        == []
+    )
+    flags = deterministic_output_flags(
+        synthesis,
+        citations=citations,
+    )
+    assert "claim_evidence_attribution_mismatch" not in flags
+
+
+def test_claim_evidence_attribution_ignores_ocr_spaces():
+    citations = [
+        {
+            "citation_id": 5,
+            "quote": (
+                "2015 年5 月1 日，我国《存款保险条例》施行，"
+                "存款保险制度正式建立。"
+            ),
+        }
+    ]
+    synthesis = SynthesisResult(
+        answer="《存款保险条例》自2015年5月1日起施行 [5]",
+        used_tool_call_ids=[],
+        used_citation_ids=["5"],
+        uncertainty=None,
+        disclaimer_required=False,
+    )
+    flags = deterministic_output_flags(
+        synthesis,
+        citations=citations,
+    )
+    assert "claim_evidence_attribution_mismatch" not in flags
+
+
+def test_claim_evidence_attribution_flags_spaced_pollution():
+    citations = [
+        {
+            "citation_id": 5,
+            "quote": (
+                "第四十七条 本条例自2013 年3 月15 日起施行。\n"
+                "附录五\n"
+                "存款保险条例\n"
+                "第一条 本条例自2015 年5 月1 日起施行。"
+            ),
+        }
+    ]
+    synthesis = SynthesisResult(
+        answer="《存款保险条例》自2013年3月15日起施行 [5]",
+        used_tool_call_ids=[],
+        used_citation_ids=["5"],
+        uncertainty=None,
+        disclaimer_required=False,
+    )
+    flags = deterministic_output_flags(
+        synthesis,
+        citations=citations,
+    )
+    assert "claim_evidence_attribution_mismatch" in flags
+
+
+def test_case_verdicts_are_structured_and_enum_validated():
+    valid = SynthesisResult(
+        answer="案例A与案例B的结论。",
+        used_tool_call_ids=[],
+        used_citation_ids=[],
+        uncertainty=None,
+        disclaimer_required=False,
+        case_verdicts={
+            "case_A": "determined",
+            "case_B": "conditional",
+        },
+    )
+    assert valid.case_verdicts["case_A"] == "determined"
+    with pytest.raises(Exception):
+        SynthesisResult(
+            answer="x",
+            used_tool_call_ids=[],
+            used_citation_ids=[],
+            uncertainty=None,
+            disclaimer_required=False,
+            case_verdicts={"case_A": "unknown"},
+        )
+
+
+def test_unverified_state_mutation_claim_detected():
+    synthesis = SynthesisResult(
+        answer="好的，已记住您的信息：年龄35岁，家庭年收入36万元。",
+        used_tool_call_ids=[],
+        used_citation_ids=[],
+        uncertainty=None,
+        disclaimer_required=False,
+    )
+    flags = deterministic_output_flags(
+        synthesis,
+        result_reference_context={"has_mutation_intent": False},
+    )
+    assert "unverified_state_mutation_claim" in flags
+
+
+def test_unverified_state_mutation_claim_detected_saved_paraphrase():
+    synthesis = SynthesisResult(
+        answer="这些信息已作为您的个人基础资料保存，后续分析会以此为准。",
+        used_tool_call_ids=[],
+        used_citation_ids=[],
+        uncertainty=None,
+        disclaimer_required=False,
+    )
+    flags = deterministic_output_flags(
+        synthesis,
+        result_reference_context={"has_mutation_intent": False},
+    )
+    assert "unverified_state_mutation_claim" in flags
+
+
+def test_state_mutation_claim_allowed_with_mutation_intent():
+    synthesis = SynthesisResult(
+        answer="您的年龄已保存到长期记忆。",
+        used_tool_call_ids=[],
+        used_citation_ids=[],
+        uncertainty=None,
+        disclaimer_required=False,
+    )
+    flags = deterministic_output_flags(
+        synthesis,
+        result_reference_context={"has_mutation_intent": True},
+    )
+    assert "unverified_state_mutation_claim" not in flags
+
+
+def test_no_state_mutation_claim_without_intent_is_ok():
+    synthesis = SynthesisResult(
+        answer="建议每月预留 1.5 万元作为紧急备用金。",
+        used_tool_call_ids=[],
+        used_citation_ids=[],
+        uncertainty=None,
+        disclaimer_required=False,
+    )
+    flags = deterministic_output_flags(
+        synthesis,
+        result_reference_context={"has_mutation_intent": False},
+    )
+    assert "unverified_state_mutation_claim" not in flags
+
+
+def test_committed_state_reference_is_not_flagged():
+    synthesis = SynthesisResult(
+        answer="根据当前已确认的首付款25万计算，剩余资金为65万。",
+        used_tool_call_ids=[],
+        used_citation_ids=[],
+        uncertainty=None,
+        disclaimer_required=False,
+    )
+    flags = deterministic_output_flags(
+        synthesis,
+        result_reference_context={
+            "has_mutation_intent": False,
+            "committed_fact_fields": ["down_payment"],
+        },
+    )
+    assert "unverified_state_mutation_claim" not in flags
+
+
+def test_committed_state_reference_flagged_when_no_committed_facts():
+    synthesis = SynthesisResult(
+        answer="根据当前已确认的首付款25万计算，剩余资金为65万。",
+        used_tool_call_ids=[],
+        used_citation_ids=[],
+        uncertainty=None,
+        disclaimer_required=False,
+    )
+    flags = deterministic_output_flags(
+        synthesis,
+        result_reference_context={
+            "has_mutation_intent": False,
+            "committed_fact_fields": [],
+        },
+    )
+    assert "unverified_state_mutation_claim" in flags
+
+
+def test_committed_state_update_reference_is_not_flagged():
+    synthesis = SynthesisResult(
+        answer="已将首付款更新为25万，因此剩余资金为65万。",
+        used_tool_call_ids=[],
+        used_citation_ids=[],
+        uncertainty=None,
+        disclaimer_required=False,
+    )
+    flags = deterministic_output_flags(
+        synthesis,
+        result_reference_context={
+            "has_mutation_intent": False,
+            "committed_fact_fields": ["down_payment", "cash"],
+        },
+    )
+    assert "unverified_state_mutation_claim" not in flags
+
+
+def test_typed_committed_state_reference_validated():
+    synthesis = SynthesisResult(
+        answer="已修改后的首付款25万元，剩余资金为65万。",
+        used_tool_call_ids=[],
+        used_citation_ids=[],
+        uncertainty=None,
+        disclaimer_required=False,
+        state_claim_bindings=[
+            {
+                "claim_id": "CLAIM_LOCAL_1",
+                "claim_type": "committed_state_reference",
+                "fact_refs": ["down_payment"],
+            }
+        ],
+    )
+    flags = deterministic_output_flags(
+        synthesis,
+        result_reference_context={
+            "has_mutation_intent": False,
+            "committed_fact_fields": ["down_payment", "cash"],
+        },
+    )
+    assert "unverified_committed_state_reference" not in flags
+    assert "unverified_state_mutation_claim" not in flags
+
+
+def test_typed_committed_state_reference_rejected_when_fact_unknown():
+    synthesis = SynthesisResult(
+        answer="已修改后的首付款25万元，剩余资金为65万。",
+        used_tool_call_ids=[],
+        used_citation_ids=[],
+        uncertainty=None,
+        disclaimer_required=False,
+        state_claim_bindings=[
+            {
+                "claim_id": "CLAIM_LOCAL_1",
+                "claim_type": "committed_state_reference",
+                "fact_refs": ["down_payment"],
+            }
+        ],
+    )
+    flags = deterministic_output_flags(
+        synthesis,
+        result_reference_context={
+            "has_mutation_intent": False,
+            "committed_fact_fields": ["cash"],
+        },
+    )
+    assert "unverified_committed_state_reference" in flags
+
+
+def test_typed_current_turn_ack_requires_mutation_intent():
+    synthesis = SynthesisResult(
+        answer="已帮你把首付款修改为25万元。",
+        used_tool_call_ids=[],
+        used_citation_ids=[],
+        uncertainty=None,
+        disclaimer_required=False,
+        state_claim_bindings=[
+            {
+                "claim_id": "CLAIM_LOCAL_2",
+                "claim_type": "current_turn_mutation_ack",
+                "fact_refs": ["down_payment"],
+                "mutation_receipt_ref": "CURRENT_TURN",
+            }
+        ],
+    )
+    flags = deterministic_output_flags(
+        synthesis,
+        result_reference_context={
+            "has_mutation_intent": True,
+            "current_turn_mutation_fields": ["down_payment"],
+        },
+    )
+    assert "unverified_state_mutation_claim" not in flags
+
+    flags = deterministic_output_flags(
+        synthesis,
+        result_reference_context={
+            "has_mutation_intent": False,
+            "current_turn_mutation_fields": ["down_payment"],
+        },
+    )
+    assert "unverified_state_mutation_claim" in flags
+
+
+def test_delivery_truth_conflict_when_negating_technical_failure():
+    synthesis = SynthesisResult(
+        answer="本轮检索正常完成，没有技术异常。",
+        used_tool_call_ids=[],
+        used_citation_ids=[],
+        uncertainty=None,
+        disclaimer_required=False,
+    )
+    flags = deterministic_output_flags(
+        synthesis,
+        result_reference_context={
+            "technical_failures": [
+                {
+                    "requirement_id": "T5:4",
+                    "stage": "evidence_assessment",
+                    "status": "assessment_protocol_failed",
+                }
+            ]
+        },
+    )
+    assert "delivery_truth_conflict" in flags
+
+
+def test_delivery_discloses_technical_failure_without_conflict():
+    synthesis = SynthesisResult(
+        answer="检索服务技术异常，该部分证据验证未完成。",
+        used_tool_call_ids=[],
+        used_citation_ids=[],
+        uncertainty=None,
+        disclaimer_required=False,
+    )
+    flags = deterministic_output_flags(
+        synthesis,
+        result_reference_context={
+            "technical_failures": [
+                {
+                    "requirement_id": "T5:4",
+                    "stage": "evidence_assessment",
+                    "status": "assessment_protocol_failed",
+                }
+            ]
+        },
+    )
+    assert "delivery_truth_conflict" not in flags
+
+
+def test_no_technical_failures_never_conflicts():
+    synthesis = SynthesisResult(
+        answer="本轮没有技术异常。",
+        used_tool_call_ids=[],
+        used_citation_ids=[],
+        uncertainty=None,
+        disclaimer_required=False,
+    )
+    flags = deterministic_output_flags(
+        synthesis,
+        result_reference_context={"technical_failures": []},
+    )
+    assert "delivery_truth_conflict" not in flags
+
+
+def test_blocked_evidence_citation_used_detected():
+    synthesis = SynthesisResult(
+        answer="根据文档，存款保险最高偿付限额为50万元 [5]。",
+        used_tool_call_ids=[],
+        used_citation_ids=["5"],
+        uncertainty=None,
+        disclaimer_required=False,
+    )
+    flags = deterministic_output_flags(
+        synthesis,
+        result_reference_context={
+            "requirement_observations": [
+                {
+                    "requirement_id": "T3:E2",
+                    "status": "not_observed",
+                    "citation_ids": [5],
+                }
+            ]
+        },
+    )
+    assert "blocked_evidence_citation_used" in flags
+
+
+def test_supported_evidence_citation_not_blocked():
+    synthesis = SynthesisResult(
+        answer="根据文档，存款保险最高偿付限额为50万元 [5]。",
+        used_tool_call_ids=[],
+        used_citation_ids=["5"],
+        uncertainty=None,
+        disclaimer_required=False,
+    )
+    flags = deterministic_output_flags(
+        synthesis,
+        result_reference_context={
+            "requirement_observations": [
+                {
+                    "requirement_id": "T3:E2",
+                    "status": "direct_support",
+                    "citation_ids": [5],
+                }
+            ]
+        },
+    )
+    assert "blocked_evidence_citation_used" not in flags

@@ -93,11 +93,14 @@ class LifeInsuranceGapInput(BaseModel):
         description="家庭年度必要支出，单位为人民币元。",
     )
 
-    coverage_years: int = Field(
-        default=10,
+    coverage_years: int | None = Field(
+        default=None,
         ge=1,
         le=50,
-        description="需要由寿险覆盖家庭支出的年数。",
+        description=(
+            "用户明确指定的寿险支出覆盖年数。用户未指定时必须留空，"
+            "工具将返回5年、10年、15年情景，不得静默假设10年。"
+        ),
     )
 
     outstanding_debt: Decimal = Field(
@@ -197,15 +200,40 @@ def emergency_fund_range(
 def life_insurance_gap(
     *,
     annual_necessary_expense: Decimal,
-    coverage_years: int = 10,
+    coverage_years: int | None = None,
     outstanding_debt: Decimal = Decimal("0"),
     education_fund: Decimal = Decimal("0"),
     other_family_responsibilities: Decimal = Decimal("0"),
     available_assets: Decimal = Decimal("0"),
     existing_life_insurance: Decimal = Decimal("0"),
 ) -> dict:
-    if coverage_years <= 0:
+    if coverage_years is not None and coverage_years <= 0:
         raise ValueError("收入保障年数必须大于 0。")
+
+    if coverage_years is None:
+        scenarios = [
+            life_insurance_gap(
+                annual_necessary_expense=annual_necessary_expense,
+                coverage_years=years,
+                outstanding_debt=outstanding_debt,
+                education_fund=education_fund,
+                other_family_responsibilities=other_family_responsibilities,
+                available_assets=available_assets,
+                existing_life_insurance=existing_life_insurance,
+            )
+            for years in (5, 10, 15)
+        ]
+        return {
+            "assumption_mode": "scenario_range",
+            "coverage_years": None,
+            "scenario_years": [5, 10, 15],
+            "scenarios": scenarios,
+            "currency": "CNY",
+            "disclosure": (
+                "用户未指定收入保障年数；返回5年、10年、15年情景，"
+                "不将任何单一情景表述为确定结论。"
+            ),
+        }
 
     living_expense_need = normalize_money(
         annual_necessary_expense * Decimal(coverage_years)

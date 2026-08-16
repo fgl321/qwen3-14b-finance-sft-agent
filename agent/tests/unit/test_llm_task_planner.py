@@ -145,6 +145,106 @@ async def test_should_parse_business_tool_call():
 
 
 @pytest.mark.anyio
+async def test_structured_plan_control_builds_executable_dag_message():
+    client = FakeDeepSeekClient(
+        [
+            build_result(
+                tool_calls=[
+                    build_tool_call(
+                        call_id="control_plan",
+                        name="planner_submit_tool_plan",
+                        arguments={
+                            "steps": [
+                                {
+                                    "step_id": "monthly",
+                                    "tool_name": "yearly_expense_to_monthly",
+                                    "arguments": {
+                                        "yearly_necessary_expense": 180000
+                                    },
+                                    "depends_on": [],
+                                },
+                                {
+                                    "step_id": "reserve",
+                                    "tool_name": "emergency_fund_range",
+                                    "arguments": {
+                                        "monthly_necessary_expense": {
+                                            "$ref": {
+                                                "step_id": "monthly",
+                                                "path": [
+                                                    "monthly_necessary_expense"
+                                                ],
+                                            }
+                                        },
+                                        "min_months": 3,
+                                        "max_months": 6,
+                                    },
+                                    "depends_on": ["monthly"],
+                                },
+                            ],
+                            "reason": "计算备用金工具链。",
+                            "confidence": "high",
+                            "needs_review": False,
+                        },
+                    )
+                ]
+            )
+        ]
+    )
+    planner = LLMTaskPlanner(
+        llm_client=client,
+        registry=build_production_tool_registry(),
+    )
+
+    result = await planner.plan(build_request())
+
+    assert result.decision.action == "call_tools"
+    assert result.decision.tool_calls[1].depends_on == ["monthly"]
+    emitted_ids = {
+        item["id"] for item in result.assistant_message["tool_calls"]
+    }
+    assert emitted_ids == {
+        item.tool_call_id for item in result.decision.tool_calls
+    }
+
+
+@pytest.mark.anyio
+async def test_repair_rejects_semantically_identical_plan():
+    same_call = build_tool_call(
+        call_id="new_id",
+        name="yearly_expense_to_monthly",
+        arguments={"yearly_necessary_expense": 180000},
+    )
+    client = FakeDeepSeekClient(
+        [build_result(tool_calls=[same_call]), build_result(tool_calls=[same_call])]
+    )
+    planner = LLMTaskPlanner(
+        llm_client=client,
+        registry=build_production_tool_registry(),
+    )
+    request = build_request(
+        review_feedback="use a structurally different dependency plan",
+        previous_plan={
+            "action": "call_tools",
+            "tool_calls": [
+                {
+                    "tool_call_id": "old_id",
+                    "tool_name": "yearly_expense_to_monthly",
+                    "arguments": {"yearly_necessary_expense": 180000},
+                    "step_id": None,
+                    "depends_on": [],
+                }
+            ],
+        },
+    )
+
+    result = await planner.plan(request)
+
+    assert result.decision.action == "fallback"
+    assert result.error.startswith("PlannerProtocolError:")
+    assert result.attempts == 2
+
+
+@pytest.mark.anyio
 async def test_should_parse_clarification_control():
     client = FakeDeepSeekClient(
         [

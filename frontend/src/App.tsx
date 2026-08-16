@@ -1,6 +1,7 @@
-import { useState, useEffect } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
-  chat,
+  AgentError,
+  chatStream,
   clearLongTermMemory,
   deleteChatHistory,
   deleteDocument,
@@ -12,13 +13,25 @@ import {
   saveConversations,
   uploadDocument,
   type ChatResponse,
+  type AgentEvent,
   type Conversation,
   type DocumentItem,
+  type DocumentScope,
   type Message,
 } from "./api";
 import ConversationList from "./components/ConversationList";
 import ChatPanel from "./components/ChatPanel";
 import KnowledgePanel from "./components/KnowledgePanel";
+
+function evidenceSupportLabel(value?: string): string | undefined {
+  const labels: Record<string, string> = {
+    direct_support: "直接支持",
+    partial_support: "部分支持",
+    background_support: "背景支持",
+    irrelevant: "无直接支持",
+  };
+  return value ? labels[value] : undefined;
+}
 
 export default function App() {
   const [messages, setMessages] = useState<Message[]>([]);
@@ -29,12 +42,21 @@ export default function App() {
   const [enableRag, setEnableRag] = useState(true);
   const [ragMode, setRagMode] = useState<"off" | "auto" | "required">("auto");
   const [synthesisProvider, setSynthesisProvider] = useState<"qwen" | "deepseek">("qwen");
-  const [currentDocumentId, setCurrentDocumentId] = useState("");
+  const [documentScope, setDocumentScope] = useState<DocumentScope>({
+    mode: "missing",
+  });
+  const [uploadedDoc, setUploadedDoc] = useState<{
+    document_id: string;
+    title?: string | null;
+    file_name?: string | null;
+  } | null>(null);
   const [uploading, setUploading] = useState(false);
   const [uploadMessage, setUploadMessage] = useState("");
   const [documents, setDocuments] = useState<DocumentItem[]>([]);
   const [status, setStatus] = useState("正在检查服务…");
   const [raw, setRaw] = useState("");
+  const [agentEvents, setAgentEvents] = useState<AgentEvent[]>([]);
+  const activeRequest = useRef<AbortController | null>(null);
 
   useEffect(() => {
     health().then((h) => {
@@ -104,6 +126,7 @@ export default function App() {
     setActiveThreadId(threadId);
     setMessages(target?.messages || []);
     setRaw("");
+    setAgentEvents([]);
     setInput("");
   }
 
@@ -123,8 +146,8 @@ export default function App() {
     saveConversations(nextList);
     setActiveThreadId(identity.thread_id);
     setMessages([]);
-    setCurrentDocumentId("");
     setRaw("");
+    setAgentEvents([]);
     setInput("");
   }
 
@@ -175,23 +198,53 @@ export default function App() {
     ];
     setMessages(nextMessages);
     setBusy(true);
+    setAgentEvents([]);
+    const controller = new AbortController();
+    activeRequest.current = controller;
     const started = Date.now();
     try {
-      const response: ChatResponse = await chat({
+      const document_scope =
+        documentScope.mode === "none"
+          ? { mode: "none" as const, document_ids: [] }
+          : documentScope.mode === "all_uploaded"
+            ? { mode: "all_uploaded" as const, document_ids: [] }
+            : documentScope.mode === "selected"
+              ? {
+                  mode: "selected" as const,
+                  document_ids: [documentScope.documentId],
+                }
+              : undefined;
+      const response: ChatResponse = await chatStream({
         user_message: text,
         ...getIdentity(),
         synthesis_llm_provider: synthesisProvider,
-        document_ids: currentDocumentId ? [currentDocumentId] : [],
+        document_ids: [],
+        document_scope,
         use_short_memory: true,
         use_long_memory: true,
         save_memory: true,
         extract_long_memory: true,
         enable_rag: enableRag,
         rag_mode: ragMode,
-      });
+      }, (event) => {
+        if (event.event !== "completed") {
+          setAgentEvents((current) => [...current.slice(-11), event]);
+        }
+      }, controller.signal);
       setRaw(JSON.stringify(response, null, 2));
       const answer = response.final_answer || response.answer || "请求完成，但未找到回答字段。";
-      const citations = response.rag?.citations || [];
+      const usedCitationIds = new Set(
+        [
+          ...(response.synthesis_result?.used_citation_ids || []),
+          ...(response.final_response_result?.synthesis?.used_citation_ids || []),
+        ].map((id) => String(id)),
+      );
+      const citations =
+        usedCitationIds.size > 0
+          ? (response.rag?.citations || []).filter((citation) =>
+              usedCitationIds.has(String(citation.citation_id)),
+            )
+          : response.rag?.citations || [];
       const seconds = ((Date.now() - started) / 1000).toFixed(1);
       const finalMessages: Message[] = [
         ...nextMessages,
@@ -199,7 +252,20 @@ export default function App() {
           role: "assistant",
           content: answer,
           citations,
-          meta: `${seconds}s · ${response.finish_reason || ""}`,
+          evidenceSupportLevel: evidenceSupportLabel(
+            response.rag?.evidence_assessment?.support_level,
+          ),
+          tools: response.agent_loop_result?.tool_traces,
+          trace: response.node_trace,
+          meta: [
+            `${seconds}s`,
+            response.synthesis_llm_provider || synthesisProvider,
+            response.overall_status || response.finish_reason || "completed",
+            response.runtime_revision || "runtime-version-missing",
+            `RAG:${response.effective_rag?.mode || ragMode}`,
+            `执行轮:${response.execution_round ?? "?"}`,
+            `规划:${response.planner_invocation_count ?? "?"}`,
+          ].join(" · "),
         },
       ];
       setMessages(finalMessages);
@@ -212,28 +278,93 @@ export default function App() {
             : text;
       commitActive(finalMessages, title);
     } catch (error) {
+      const wasAborted = (error as Error).name === "AbortError";
+      const agentError = error instanceof AgentError ? error : undefined;
       const failed: Message[] = [
         ...nextMessages,
-        { role: "assistant", content: `请求失败：${(error as Error).message}`, error: true },
+        {
+          role: "assistant",
+          content: wasAborted ? "本次生成已停止。" : `请求失败：${(error as Error).message}`,
+          error: !wasAborted,
+          errorAction: agentError?.action,
+        },
       ];
       setMessages(failed);
       commitActive(failed);
     } finally {
+      activeRequest.current = null;
       setBusy(false);
     }
+  }
+
+  function stopGeneration() {
+    activeRequest.current?.abort();
+  }
+
+  function handleRecover(action?: string) {
+    if (action === "clear_document") {
+      setDocumentScope({ mode: "none" });
+      return;
+    }
+    if (action === "upload_document" || action === "select_document") {
+      const panel = document.querySelector(".side.card");
+      panel?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
+  }
+
+  function handleDocumentChange(value: string) {
+    if (value) {
+      setDocumentScope({ mode: "selected", documentId: value });
+    }
+  }
+
+  function handleDocumentScopeModeChange(
+    mode: "missing" | "none" | "all_uploaded" | "selected",
+  ) {
+    if (mode === "selected") {
+      const first = documents[0];
+      setDocumentScope(
+        first
+          ? { mode: "selected", documentId: first.document_id }
+          : { mode: "missing" },
+      );
+      return;
+    }
+    setDocumentScope({ mode });
+  }
+
+  function handleSwitchToUploaded() {
+    if (!uploadedDoc?.document_id) return;
+    setDocumentScope({
+      mode: "selected",
+      documentId: uploadedDoc.document_id,
+    });
+    setUploadedDoc(null);
   }
 
   async function handleUpload(file: File) {
     setUploading(true);
     setUploadMessage(`正在上传并索引 ${file.name}…`);
     try {
-      const result = await uploadDocument(file);
+      const result = await uploadDocument(file, (job) => {
+        const label = job.progress_message || (
+          job.status === "queued" ? "等待处理" : "正在解析、切块并建立索引"
+        );
+        const progress = Math.round(job.progress_percent ?? 0);
+        setUploadMessage(`${label} ${progress}%：${file.name}`);
+      });
       if (!result.ok) throw new Error("上传返回失败");
       const chunks = result.chunks || {};
-      const docId = result.document?.document_id;
-      if (docId) setCurrentDocumentId(docId);
+      const docMeta = result.document;
+      if (docMeta?.document_id) {
+        setUploadedDoc({
+          document_id: docMeta.document_id,
+          title: docMeta.title,
+          file_name: docMeta.file_name,
+        });
+      }
       setUploadMessage(
-        `已入库 ${result.document?.file_name || file.name}（父块 ${chunks.parent_count ?? 0}，子块 ${chunks.child_count ?? 0}），已切换到该文档`,
+        `《${result.document?.title || result.document?.file_name || file.name}》上传成功（父块 ${chunks.parent_count ?? 0}，子块 ${chunks.child_count ?? 0}）`,
       );
       await refreshDocuments();
     } catch (error) {
@@ -269,7 +400,7 @@ export default function App() {
         <div>
           <h1>Qwen3-14B 金融 Agent</h1>
           <p className="sub">
-            最终回答：蒸馏 Qwen3-14B SFT ｜规划/工具/记忆：DeepSeek ｜ RAG：BGE-M3 + Qdrant
+            最终回答可选蒸馏 Qwen3-14B / DeepSeek V4 Flash ｜ LangGraph + RAG + 确定性金融工具
           </p>
         </div>
         <div className="header-actions">
@@ -293,14 +424,20 @@ export default function App() {
           enableRag={enableRag}
           ragMode={ragMode}
           synthesisProvider={synthesisProvider}
-          currentDocumentId={currentDocumentId}
+          documentScope={documentScope}
           documents={documents}
+          uploadedDoc={uploadedDoc}
+          agentEvents={agentEvents}
           onInputChange={setInput}
           onSubmit={submit}
+          onStop={stopGeneration}
           onEnableRagChange={setEnableRag}
           onRagModeChange={setRagMode}
           onSynthesisProviderChange={setSynthesisProvider}
-          onDocumentChange={setCurrentDocumentId}
+          onDocumentChange={handleDocumentChange}
+          onDocumentScopeModeChange={handleDocumentScopeModeChange}
+          onSwitchToUploaded={handleSwitchToUploaded}
+          onRecover={handleRecover}
         />
 
         <KnowledgePanel

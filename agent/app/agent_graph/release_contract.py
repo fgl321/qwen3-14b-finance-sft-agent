@@ -2,6 +2,7 @@ from __future__ import annotations
 
 
 STAGE_4_2_8_VERSION = "stage_4_2_8f"
+PRODUCTION_RUNTIME_REVISION = "structured-protocol-v3.1-20260814"
 STAGE_4_2_8_RELEASE_NAME = (
     "Stage 4.2.8 Agent Loop Reliability"
 )

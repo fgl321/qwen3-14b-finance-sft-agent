@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
+import re
 
 
 SUPPORTED_DOCUMENT_EXTENSIONS = {
@@ -115,4 +116,9 @@ def clean_text(text: str) -> str:
         if line:
             lines.append(line)
 
-    return "\n".join(lines).strip()
+    cleaned = "\n".join(lines).strip()
+    # OCR 常见问题：数字与“年/月/日”之间被插入空格
+    # （例如 “2015 年5 月1 日”），会影响日期识别与检索。
+    cleaned = re.sub(r"(\d)\s+([年月日])", r"\1\2", cleaned)
+    cleaned = re.sub(r"([年月日])\s+(\d)", r"\1\2", cleaned)
+    return cleaned

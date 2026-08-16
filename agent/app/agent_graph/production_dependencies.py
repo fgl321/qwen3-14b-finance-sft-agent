@@ -41,6 +41,25 @@ class ProductionGraphDependencies:
 
     agent_loop: AgentToolLoop
     final_response_pipeline: FinalResponsePipeline
+    planner: LLMTaskPlanner | None = None
+    reviewer: LLMPlanReviewer | None = None
+    executor: ProductionToolExecutor | None = None
+    synthesizer: LLMAnswerSynthesizer | None = None
+    output_guard: LLMOutputGuard | None = None
+    limits: AgentLimits = DEFAULT_AGENT_LIMITS
+
+    @property
+    def explicit_workflow_ready(self) -> bool:
+        return all(
+            item is not None
+            for item in (
+                self.planner,
+                self.reviewer,
+                self.executor,
+                self.synthesizer,
+                self.output_guard,
+            )
+        )
 
 
 def build_production_graph_dependencies(
@@ -98,4 +117,10 @@ def build_production_graph_dependencies(
         final_response_pipeline=(
             final_response_pipeline
         ),
+        planner=planner,
+        reviewer=reviewer,
+        executor=executor,
+        synthesizer=synthesizer,
+        output_guard=output_guard,
+        limits=limits,
     )

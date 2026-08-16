@@ -6,6 +6,8 @@ from pydantic import BaseModel, Field
 class DocumentMetaPayload(BaseModel):
     document_id: str
     file_name: str
+    title: str | None = None
+    aliases: list[str] = Field(default_factory=list)
     file_sha256: str
     tenant_id: str
     owner_user_id: str
@@ -39,12 +41,16 @@ class DocumentIngestResponse(BaseModel):
 class KnowledgeDocumentPayload(BaseModel):
     document_id: str
     file_name: str | None = None
+    title: str | None = None
+    aliases: list[str] = Field(default_factory=list)
     file_sha256: str | None = None
     tenant_id: str | None = None
     owner_user_id: str | None = None
     knowledge_base_id: str | None = None
     visibility: str | None = None
     source_type: str | None = None
+    status: str | None = None
+    index_status: str | None = None
     document_version: int | None = None
     ingested_at: str | None = None
     page_start: int | None = None
@@ -52,6 +58,7 @@ class KnowledgeDocumentPayload(BaseModel):
     parent_count: int = 0
     child_count: int = 0
     total_chunks: int = 0
+    error_message: str | None = None
 
 
 class KnowledgeDocumentListResponse(BaseModel):

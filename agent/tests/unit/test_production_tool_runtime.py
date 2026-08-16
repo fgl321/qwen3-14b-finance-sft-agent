@@ -49,8 +49,15 @@ def test_registry_should_be_frozen_and_explicit() -> None:
     assert registry.frozen is True
 
     assert registry.names() == (
+        "asset_allocation_rebalance",
+        "bond_analytics",
+        "cashflow_npv_irr",
+        "compound_interest_projection",
         "emergency_fund_range",
+        "financial_ratio_analysis",
         "life_insurance_gap",
+        "loan_amortization_compare",
+        "portfolio_risk_metrics",
         "yearly_expense_to_monthly",
     )
 
@@ -182,6 +189,36 @@ async def test_execute_life_insurance_gap() -> None:
         outcome.result.output["life_insurance_gap"]
         == "2050000.00"
     )
+
+
+@pytest.mark.anyio
+async def test_life_insurance_gap_without_years_returns_scenarios() -> None:
+    executor = ProductionToolExecutor(
+        registry=build_production_tool_registry()
+    )
+    outcome = await executor.execute_one(
+        ToolCallRequest(
+            tool_call_id="call_life_scenarios",
+            tool_name="life_insurance_gap",
+            arguments={
+                "annual_necessary_expense": 180000,
+                "outstanding_debt": 800000,
+                "available_assets": 250000,
+                "existing_life_insurance": 300000,
+            },
+        ),
+        context=build_context(),
+    )
+
+    assert outcome.result.success is True
+    output = outcome.result.output
+    assert output["assumption_mode"] == "scenario_range"
+    assert output["scenario_years"] == [5, 10, 15]
+    assert [item["life_insurance_gap"] for item in output["scenarios"]] == [
+        "1150000.00",
+        "2050000.00",
+        "2950000.00",
+    ]
 
 
 @pytest.mark.anyio

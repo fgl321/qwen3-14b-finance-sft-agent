@@ -40,10 +40,16 @@ export default function KnowledgePanel({
         {documents.map((doc) => (
           <li key={doc.document_id}>
             <span className="doc-name">
-              {doc.file_name || doc.document_id}
+              {doc.title || doc.file_name || doc.document_id}
             </span>
             <span className="doc-meta">
-              {doc.total_chunks ?? 0} 块 ·{" "}
+              {doc.index_status === "degraded" ||
+              doc.status === "index_degraded"
+                ? "索引异常"
+                : doc.status === "active"
+                  ? "可检索"
+                  : doc.status || "未知"}{" "}
+              · {doc.total_chunks ?? 0} 块 ·{" "}
               {doc.ingested_at ? doc.ingested_at.slice(0, 10) : ""}
             </span>
             <button className="link" onClick={() => onDelete(doc)}>

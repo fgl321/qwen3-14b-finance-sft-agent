@@ -34,6 +34,9 @@ class ProductionFinanceGraphState(
     # 上下文与路由
     context_summary: str
     route_context: dict[str, Any]
+    citations: list[dict[str, Any]]
+    orchestration_mode: str
+    node_trace: list[dict[str, Any]]
 
     allowed_tool_names: list[str]
     allowed_tool_groups: list[str]
@@ -45,9 +48,46 @@ class ProductionFinanceGraphState(
 
     # Agent 工具循环
     agent_loop_result: dict[str, Any] | None
+    current_decision: dict[str, Any] | None
+    current_assistant_message: dict[str, Any]
+    current_review: dict[str, Any]
+    current_tool_results: list[dict[str, Any]]
+    agent_messages: list[dict[str, Any]]
+    tool_results: list[dict[str, Any]]
+    tool_traces: list[dict[str, Any]]
+    planner_invocations: list[dict[str, Any]]
+    review_invocations: list[dict[str, Any]]
+    reused_tool_calls: list[dict[str, Any]]
+    successful_tool_results: dict[str, dict[str, Any]]
+    error_counts: dict[str, int]
+    planner_round: int
+    total_tool_calls: int
+    reused_tool_call_count: int
+    repeated_error_count: int
+    consecutive_no_progress_rounds: int
+    plan_revision_count: int
+    execution_round: int
+    plan_attempt_in_round: int
+    plan_repair_count: int
+    replan_count: int
+    planner_invocation_count: int
+    last_execution_observation: dict[str, Any]
+    execution_round_history: list[dict[str, Any]]
+    review_feedback: str
+    loop_status: str
+    loop_finish_reason: str
 
     # 最终回答流水线
     final_response_result: dict[str, Any] | None
+    synthesis_result: dict[str, Any] | None
+    output_guard_result: dict[str, Any] | None
+    rewrite_instructions: str
+    output_rewrite_count: int
+    guard_retry_count: int
+    guard_violation_fingerprints: list[str]
+    guard_action: str
+    model_invocations: list[dict[str, Any]]
+    usage_by_node: dict[str, dict[str, Any]]
 
     # 对外输出
     status: str

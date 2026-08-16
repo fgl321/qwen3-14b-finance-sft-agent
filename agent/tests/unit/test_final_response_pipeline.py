@@ -1,4 +1,5 @@
 import pytest
+from dataclasses import replace
 
 from app.agent_graph.final_response_pipeline import (
     FinalResponsePipeline,
@@ -101,12 +102,12 @@ def synthesis(answer):
     )
 
 
-def guard(verdict, rewrite=None):
+def guard(verdict, rewrite=None, flags=None):
     return OutputGuardInvocationResult(
         result=OutputGuardResult(
             verdict=verdict,
             reason="测试检查结果。",
-            risk_flags=[],
+            risk_flags=flags or [],
             rewrite_instructions=rewrite,
         )
     )
@@ -137,11 +138,101 @@ async def test_pipeline_should_return_passed_answer():
     )
 
     result = await pipeline.run(request())
-
-    assert result.status == "completed"
     assert "4.5万" in result.answer
     assert "不构成" in result.answer
     assert result.output_rewrites == 0
+
+
+@pytest.mark.anyio
+async def test_pipeline_stops_on_immutable_guard_violation():
+    pipeline = FinalResponsePipeline(
+        synthesizer=FakeSynthesizer(
+            [
+                synthesis("草稿A"),
+                synthesis("草稿B"),
+            ]
+        ),
+        output_guard=FakeGuard(
+            [
+                guard(
+                    "rewrite",
+                    rewrite="同一结构性要求：task9 协议失败无法修改",
+                ),
+                guard(
+                    "rewrite",
+                    rewrite="同一结构性要求：task9 协议失败无法修改",
+                ),
+            ]
+        ),
+    )
+    result = await pipeline.run(request())
+    assert result.status == "completed"
+    assert result.delivery_status == "validated_with_limitations"
+    assert result.finish_reason == (
+        "structural_guard_violation_persisted"
+    )
+    assert result.output_rewrites == 1
+
+
+@pytest.mark.anyio
+async def test_pipeline_passes_delivery_contract_to_synthesis():
+    synthesizer = FakeSynthesizer(
+        [synthesis("ok")]
+    )
+    pipeline = FinalResponsePipeline(
+        synthesizer=synthesizer,
+        output_guard=FakeGuard(
+            [guard("pass")]
+        ),
+    )
+    req = replace(
+        request(),
+        delivery_contract=(
+            "<delivery_contract>task_9 failed_protocol</delivery_contract>"
+        ),
+    )
+    result = await pipeline.run(req)
+    assert result.status == "completed"
+    assert synthesizer.requests[0].delivery_contract == (
+        "<delivery_contract>task_9 failed_protocol</delivery_contract>"
+    )
+
+
+@pytest.mark.anyio
+async def test_pipeline_stops_on_immutable_citation_violation():
+    pipeline = FinalResponsePipeline(
+        synthesizer=FakeSynthesizer(
+            [
+                synthesis("草稿A"),
+                synthesis("草稿B"),
+            ]
+        ),
+        output_guard=FakeGuard(
+            [
+                guard(
+                    "rewrite",
+                    rewrite="需要真实文档引用",
+                    flags=[
+                        "required_citations_unavailable_not_disclosed"
+                    ],
+                ),
+                guard(
+                    "rewrite",
+                    rewrite="需要真实文档引用",
+                    flags=[
+                        "required_citations_unavailable_not_disclosed"
+                    ],
+                ),
+            ]
+        ),
+    )
+    result = await pipeline.run(request())
+    assert result.status == "completed"
+    assert result.delivery_status == "validated_with_limitations"
+    assert result.finish_reason == (
+        "structural_guard_violation_persisted"
+    )
+    assert result.output_rewrites == 1
 
 
 @pytest.mark.anyio

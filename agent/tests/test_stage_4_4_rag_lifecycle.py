@@ -2,7 +2,11 @@ from pathlib import Path
 from uuid import UUID
 
 from app.rag.document_lifecycle import RagDocumentLifecycleService
-from app.rag.document_parser import normalize_document_text, parse_document
+from app.rag.document_parser import (
+    _merge_title_lines,
+    normalize_document_text,
+    parse_document,
+)
 
 
 def test_rag_content_hash_is_stable() -> None:
@@ -34,3 +38,16 @@ def test_text_document_parser(tmp_path: Path) -> None:
     path = tmp_path / "finance.txt"
     path.write_text("紧急备用金\r\n\r\n覆盖必要支出。", encoding="utf-8")
     assert parse_document(path) == "紧急备用金\n\n覆盖必要支出。"
+
+
+def test_merge_title_lines_joins_edition_continuation() -> None:
+    assert _merge_title_lines(["金融知识普及读本", "（第二版）"]) == (
+        "金融知识普及读本（第二版）"
+    )
+    assert _merge_title_lines(
+        [
+            "中国平安财产保险股份有限公司",
+            "平安医疗费用保险（D 款）条款",
+        ]
+    ) == "平安医疗费用保险（D 款）条款"
+    assert _merge_title_lines(["普通段落内容", "不是标题"]) is None

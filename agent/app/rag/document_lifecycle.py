@@ -647,6 +647,7 @@ class RagDocumentLifecycleService:
         file_name: str | None = None,
         stored_path: str | None = None,
         metadata: dict[str, Any] | None = None,
+        aliases: list[str] | None = None,
         replace_same_title: bool = True,
         force_rebuild: bool = False,
     ) -> dict[str, Any]:
@@ -681,7 +682,16 @@ class RagDocumentLifecycleService:
             title=clean_title,
             content_hash=hash_,
         )
-        clean_metadata = sanitize_personal_value(metadata or {})
+        clean_metadata = sanitize_personal_value(dict(metadata or {}))
+        alias_values = [
+            str(item).strip()
+            for item in (aliases or [])
+            if str(item).strip()
+        ]
+        if alias_values:
+            clean_metadata["aliases"] = list(
+                dict.fromkeys(alias_values)
+            )
         chunks = self.chunk_text(document_id=document_id, text=clean_text)
         parent_count = sum(c.chunk_type == "parent" for c in chunks)
         child_count = sum(c.chunk_type == "child" for c in chunks)
@@ -843,6 +853,7 @@ class RagDocumentLifecycleService:
         effective_date: str | None = None,
         expired_date: str | None = None,
         metadata: dict[str, Any] | None = None,
+        aliases: list[str] | None = None,
         replace_same_title: bool = True,
     ) -> dict[str, Any]:
         file_path = Path(path)
@@ -860,6 +871,7 @@ class RagDocumentLifecycleService:
             file_name=file_path.name,
             stored_path=str(file_path),
             metadata=metadata,
+            aliases=aliases,
             replace_same_title=replace_same_title,
         )
 
@@ -915,6 +927,89 @@ class RagDocumentLifecycleService:
             owner_user_id=owner_user_id,
             knowledge_base_id=knowledge_base_id,
         ) or {}
+
+    def register_ingested_document(
+        self,
+        *,
+        document_id: str,
+        title: str,
+        file_name: str,
+        tenant_id: str,
+        owner_user_id: str,
+        knowledge_base_id: str,
+        content_hash: str,
+        parent_count: int = 0,
+        child_count: int = 0,
+        point_count: int = 0,
+        stored_path: str | None = None,
+        version: str = "1",
+        metadata: dict[str, Any] | None = None,
+        aliases: list[str] | None = None,
+    ) -> None:
+        """Register/refresh the PostgreSQL authority row after Qdrant-only
+        ingestion (the async upload path writes Qdrant first)."""
+        clean_metadata = dict(metadata or {})
+        alias_values = [
+            str(item).strip()
+            for item in (aliases or [])
+            if str(item).strip()
+        ]
+        if alias_values:
+            clean_metadata["aliases"] = list(
+                dict.fromkeys(alias_values)
+            )
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO rag_documents (
+                        document_id, tenant_id, owner_user_id,
+                        knowledge_base_id, title, source, version,
+                        effective_date, expired_date, content_hash, status,
+                        file_name, stored_path, content_text,
+                        parent_count, child_count, point_count,
+                        error_message, metadata
+                    ) VALUES (
+                        %(document_id)s, %(tenant_id)s, %(owner_user_id)s,
+                        %(knowledge_base_id)s, %(title)s, 'personal_upload',
+                        %(version)s, NULL, NULL, %(content_hash)s, 'active',
+                        %(file_name)s, %(stored_path)s, NULL,
+                        %(parent_count)s, %(child_count)s, %(point_count)s,
+                        NULL, %(metadata)s::jsonb
+                    )
+                    ON CONFLICT (
+                        tenant_id, owner_user_id, knowledge_base_id, document_id
+                    ) DO UPDATE SET
+                        status='active',
+                        title=EXCLUDED.title,
+                        file_name=EXCLUDED.file_name,
+                        stored_path=EXCLUDED.stored_path,
+                        content_hash=EXCLUDED.content_hash,
+                        parent_count=EXCLUDED.parent_count,
+                        child_count=EXCLUDED.child_count,
+                        point_count=EXCLUDED.point_count,
+                        metadata=EXCLUDED.metadata,
+                        updated_at=NOW()
+                    """,
+                    {
+                        "document_id": str(document_id),
+                        "tenant_id": str(tenant_id),
+                        "owner_user_id": str(owner_user_id),
+                        "knowledge_base_id": str(knowledge_base_id),
+                        "title": str(title),
+                        "version": str(version or "1"),
+                        "content_hash": str(content_hash or ""),
+                        "file_name": str(file_name),
+                        "stored_path": stored_path,
+                        "parent_count": int(parent_count or 0),
+                        "child_count": int(child_count or 0),
+                        "point_count": int(point_count or 0),
+                        "metadata": self._json_value(
+                            clean_metadata
+                        ),
+                    },
+                )
+            conn.commit()
 
     def _update_status(
         self,
@@ -1006,6 +1101,101 @@ class RagDocumentLifecycleService:
             "document_id": document_id,
             "point_count": point_count,
         }
+
+    def sync_index_status(
+        self,
+        *,
+        tenant_id: str,
+        owner_user_id: str,
+        knowledge_base_id: str,
+    ) -> dict[str, Any]:
+        """Reconcile Postgres lifecycle status with Qdrant index reality.
+
+        ``active`` must mean metadata ready AND index ready.  A document whose
+        vectors disappeared from Qdrant is downgraded to ``index_degraded`` so
+        it can never be advertised as a normally searchable document.
+        """
+
+        store = self.rag_store
+        if store is None:
+            raise RuntimeError("rag_store 尚未初始化，无法对账索引状态")
+        checked = 0
+        changed: list[dict[str, Any]] = []
+        for status in ("active", "index_degraded"):
+            rows = self.list_documents(
+                tenant_id=tenant_id,
+                owner_user_id=owner_user_id,
+                knowledge_base_id=knowledge_base_id,
+                status=status,
+                limit=500,
+            )
+            for row in rows:
+                document_id = str(row.get("document_id") or "")
+                if not document_id:
+                    continue
+                checked += 1
+                try:
+                    count = int(
+                        store.count_document_chunks(
+                            tenant_id=tenant_id,
+                            owner_user_id=owner_user_id,
+                            knowledge_base_id=knowledge_base_id,
+                            document_id=document_id,
+                        )
+                        or 0
+                    )
+                except Exception:
+                    count = 0
+                stored_count = int(row.get("point_count") or 0)
+                if status == "active" and count == 0:
+                    self._update_status(
+                        document_id=document_id,
+                        tenant_id=tenant_id,
+                        owner_user_id=owner_user_id,
+                        knowledge_base_id=knowledge_base_id,
+                        status="index_degraded",
+                        point_count=0,
+                    )
+                    changed.append(
+                        {
+                            "document_id": document_id,
+                            "from": "active",
+                            "to": "index_degraded",
+                        }
+                    )
+                elif status == "index_degraded" and count > 0:
+                    self._update_status(
+                        document_id=document_id,
+                        tenant_id=tenant_id,
+                        owner_user_id=owner_user_id,
+                        knowledge_base_id=knowledge_base_id,
+                        status="active",
+                        point_count=count,
+                    )
+                    changed.append(
+                        {
+                            "document_id": document_id,
+                            "from": "index_degraded",
+                            "to": "active",
+                        }
+                    )
+                elif status == "active" and count > 0 and stored_count != count:
+                    self._update_status(
+                        document_id=document_id,
+                        tenant_id=tenant_id,
+                        owner_user_id=owner_user_id,
+                        knowledge_base_id=knowledge_base_id,
+                        status="active",
+                        point_count=count,
+                    )
+                    changed.append(
+                        {
+                            "document_id": document_id,
+                            "from": f"active@{stored_count}",
+                            "to": f"active@{count}",
+                        }
+                    )
+        return {"checked": checked, "changed": changed}
 
     def rebuild_document(
         self,

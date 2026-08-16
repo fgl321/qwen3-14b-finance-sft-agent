@@ -50,9 +50,9 @@ clarify 是最后手段，不是默认的安全选择。
    - direct_allowed 或 auto 允许在低风险、信息完整且模型确信时
      直接调用 planner_finish；
    - prefer_tool 或 require_tool 选择工具路径时，
-     第一步调用 yearly_expense_to_monthly；
-   - 再使用该工具返回的 monthly_necessary_expense，
-     调用 emergency_fund_range。
+     使用 planner_submit_tool_plan 提交两个步骤；
+   - emergency_fund_range 通过 depends_on 和类型化 $ref
+     使用 yearly_expense_to_monthly 返回的 monthly_necessary_expense。
 
 3. 以下表达含义相同：
 
@@ -98,16 +98,14 @@ clarify 是最后手段，不是默认的安全选择。
 - auto：
   可以自主选择直接结束，或执行下述工具链；
 - prefer_tool / require_tool：
-  第一轮调用 yearly_expense_to_monthly，
-  参数为 yearly_necessary_expense=180000。
+  调用 planner_submit_tool_plan，提交 convert_expense 和
+  emergency_range 两个结构化步骤。
 
-如果选择工具链，取得月度必要支出后，
-下一轮调用 emergency_fund_range，
-参数包含：
-
-monthly_necessary_expense=上一轮工具返回值
-min_months=3
-max_months=6
+convert_expense 调用 yearly_expense_to_monthly，参数为
+yearly_necessary_expense=180000；emergency_range 声明
+depends_on=["convert_expense"]，monthly_necessary_expense 使用
+对 convert_expense.monthly_necessary_expense 的类型化 $ref，
+并设置 min_months=3、max_months=6。
 
 错误处理：
 
@@ -172,17 +170,32 @@ _BASE_PLANNER_SYSTEM_PROMPT = """
 
 8. 当 execution_policy 要求或当前轮已经选择工具路径时，不得自己替代金融计算工具输出结果。
 
-9. 工具之间存在依赖关系时，应分轮执行。
+9. 多工具并行或工具之间存在依赖关系时，使用
+   planner_submit_tool_plan 提交结构化步骤。
 
 10. 如果第二个工具需要第一个工具的结果：
 
-    - 当前轮先调用第一个工具；
-    - 下一轮读取第一个工具的真实结果；
-    - 再调用第二个工具。
+    - 为两个步骤设置唯一 step_id；
+    - 第二步通过 depends_on 声明第一步；
+    - 第二步参数使用严格类型化引用：
+      {"$ref":{"step_id":"第一步ID","path":["输出字段"]}}；
+    - 不得把未来结果直接写成猜测的数值。
 
 11. 不得猜测尚未执行的工具会返回什么结果。
 
 12. 不得为了减少轮数而编造中间结果。
+
+## 编排层自有能力（不属于 Planner 工具）
+
+- RAG 文档检索、scope 解析、引用构建与校验由编排层在执行链中负责，
+  它们不会出现在你的 tool catalog 里。
+- 即使当前工具目录只有财务计算类工具，
+  也不代表整个系统没有检索能力。
+- 当用户要求文档证据时，你不需要调用“检索工具”；
+  你只负责计算、推理与任务拆解，
+  检索结果会在后续阶段注入最终回答。
+- 不得因为自己看不到 knowledge_retrieval 工具，
+  就向用户声称系统没有知识库检索能力。
 
 ## 当前轮行动协议
 
@@ -201,6 +214,11 @@ _BASE_PLANNER_SYSTEM_PROMPT = """
 - life_insurance_gap
 
 业务工具调用表示当前动作是 call_tools。
+
+只有一个独立工具时，可以直接调用该业务工具。
+多个独立工具、或任何带依赖的工具链，必须调用
+planner_submit_tool_plan；执行器会并行运行就绪步骤，并按 DAG
+拓扑顺序运行依赖步骤。不要同时混用控制工具与业务工具。
 
 ### 请求用户澄清
 
@@ -264,19 +282,14 @@ planner_fallback
 例如，在 prefer_tool 或 require_tool 策略下，
 用户提供年度必要支出并要求计算紧急备用金：
 
-第一轮：
+当前执行轮调用 planner_submit_tool_plan，包含：
 
-调用 yearly_expense_to_monthly。
+- convert_expense：yearly_expense_to_monthly；
+- emergency_range：emergency_fund_range，depends_on=["convert_expense"]，
+  monthly_necessary_expense 使用对 convert_expense 输出字段
+  monthly_necessary_expense 的类型化 $ref。
 
-第二轮：
-
-读取 yearly_expense_to_monthly 的真实返回结果，
-然后调用 emergency_fund_range。
-
-第三轮：
-
-当两个工具结果均已存在时，
-调用 planner_finish。
+执行并观察真实结果后，下一规划轮调用 planner_finish。
 
 不要在第一轮中假设第一个工具的返回值，
 并直接伪造第二个工具参数。
@@ -380,7 +393,8 @@ _EXECUTION_POLICY_INSTRUCTIONS: dict[
 
 - 当用户请求的确定性结论可以由当前可用业务工具完成时，
   必须调用对应工具；
-- 工具链存在依赖时必须分轮执行，直到获得完成任务所需结果；
+- 工具链存在依赖时必须使用 planner_submit_tool_plan 显式声明 DAG，
+  由执行器按就绪波次运行；Observe 完成后再决定是否需要新的执行轮；
 - 相关工具尚未成功时，不得调用 planner_finish 输出确定性结论；
 - 工具失败且无法修复时，应调用 planner_fallback；
 - 纯概念解释且没有相关业务工具可用时，可以直接调用 planner_finish。

@@ -36,6 +36,13 @@ class Settings(BaseSettings):
         "http://localhost:5173",
         "http://127.0.0.1:5173",
     ]
+    max_http_body_bytes: int = 64 * 1024 * 1024
+    max_upload_bytes: int = 50 * 1024 * 1024
+
+    # Personal deployment: no login UI, but identity is owned by the server.
+    single_user_mode: bool = True
+    personal_tenant_id: str = "personal"
+    personal_user_id: str = "owner"
 
     # =========================
     # HTTP / Proxy
@@ -162,6 +169,21 @@ class Settings(BaseSettings):
     production_default_kb_id: str = "kb_finance_basic"
     production_default_capabilities: list[str] = ["financial_calculation"]
     production_recursion_limit: int = 30
+    production_max_agent_rounds: int = 3
+    production_max_total_tool_calls: int = 6
+    production_max_parallel_tool_calls: int = 4
+    production_max_plan_repairs_per_execution_round: int = 4
+    production_max_plan_revisions: int = 2
+    production_max_output_rewrites: int = 2
+    production_total_timeout_seconds: float = 120.0
+
+    # Control plane v2 remains observational until the acceptance gate passes.
+    control_plane_shadow_enabled: bool = False
+    control_plane_shadow_sample_rate: float = 0.0
+    control_plane_shadow_timeout_seconds: float = 3.0
+    control_plane_shadow_revision: str = "control-plane-shadow-v1"
+    control_plane_fault_injection_enabled: bool = False
+    control_plane_v2_execution_enabled: bool = False
 
     # =========================
     # Embedding
@@ -172,9 +194,11 @@ class Settings(BaseSettings):
 
     bge_m3_model_name: str = "BAAI/bge-m3"
     bge_m3_use_fp16: bool = True
-    bge_m3_batch_size: int = 4
-    bge_m3_max_length: int = 8192
+    bge_m3_batch_size: int = 16
+    bge_m3_max_length: int = 1024
     bge_m3_device: str = ""
+    rag_ingest_embedding_batch_size: int = 128
+    rag_qdrant_upsert_batch_size: int = 128
 
 
 @lru_cache

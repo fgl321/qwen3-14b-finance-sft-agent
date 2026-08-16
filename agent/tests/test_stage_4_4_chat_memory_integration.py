@@ -26,6 +26,21 @@ class FakeShortMemory:
         self.saved.append(kwargs)
         return 2
 
+    def get_conversation_state(self, **_: Any):
+        return None
+
+    def set_conversation_state(self, **kwargs: Any):
+        self.saved_conversation_state = kwargs.get("state")
+
+    def get_narrative_segments(self, **_: Any):
+        return []
+
+    def set_narrative_segments(self, **_: Any):
+        return None
+
+    def get_thread_meta(self, **_: Any):
+        return None
+
 
 class FakeLongMemory:
     def list_facts(self, **_: Any):
@@ -94,7 +109,9 @@ def test_production_chat_loads_and_saves_personal_memory() -> None:
         production_chat_graph(payload, _request(service, short, long))
     )
     assert service.kwargs["history_messages"][0]["content"].startswith("我之前")
-    assert "annual_necessary_expense" in service.kwargs["context_summary"]
+    # memory_policy=not_needed: LTM must be physically excluded from context.
+    # The prior user fact still comes from the Raw Transcript (short memory).
+    assert "annual_necessary_expense" not in service.kwargs["context_summary"]
     assert short.saved
     assert result["personal_memory"]["short_memory_saved"] is True
     assert "knowledge_retrieval" in service.kwargs["allowed_tool_groups"]

@@ -50,6 +50,30 @@ class ParentChildChunker:
         if self.config.child_overlap_tokens >= self.config.child_token_limit:
             raise ValueError("child_overlap_tokens 必须小于 child_token_limit")
 
+    _STRUCTURAL_BOUNDARY_RE = re.compile(
+        r"^\s*(?:"
+        r"附录\s*[一二三四五六七八九十0-9]+"
+        r"|第\s*[一二三四五六七八九十0-9]+\s*[章节]"
+        r"|第\s*[一二三四五六七八九十0-9]+\s*条"
+        r"|《[^》]{1,60}》"
+        r"|[^，。；！？\n]{2,30}(?:条例|办法|规定|规则|细则|指引)"
+        r")"
+    )
+
+    @classmethod
+    def _is_structural_boundary(cls, text: str) -> bool:
+        """True for appendix/chapter/article/regulation-title starts.
+
+        A parent chunk must never merge the tail of one regulation with the
+        title/articles of the next one, otherwise facts (e.g. an effective
+        date) can be attributed to the wrong subject.
+        """
+        return bool(
+            cls._STRUCTURAL_BOUNDARY_RE.search(
+                str(text or "").strip()
+            )
+        )
+
     def chunk(
         self,
         parsed_document: ParsedDocument,
@@ -123,6 +147,8 @@ class ParentChildChunker:
                 "file_sha256": parsed_document.meta.file_sha256,
                 "source_type": parsed_document.meta.source_type,
                 "document_version": parsed_document.meta.version,
+                "title": parsed_document.meta.title,
+                "aliases": list(parsed_document.meta.aliases),
                 "fallback_short_document": True,
             },
         )
@@ -196,6 +222,10 @@ class ParentChildChunker:
                         "file_sha256": parsed_document.meta.file_sha256,
                         "source_type": parsed_document.meta.source_type,
                         "document_version": parsed_document.meta.version,
+                        "title": parsed_document.meta.title,
+                        "aliases": list(
+                            parsed_document.meta.aliases
+                        ),
                         "content_type": (
                             parsed_document.meta.content_type
                         ),
@@ -277,6 +307,8 @@ class ParentChildChunker:
                         "document_version": parent_chunk.metadata.get(
                             "document_version"
                         ),
+                        "title": parent_chunk.metadata.get("title"),
+                        "aliases": parent_chunk.metadata.get("aliases"),
                         "content_type": parent_chunk.metadata.get(
                             "content_type"
                         ),
@@ -350,6 +382,10 @@ class ParentChildChunker:
                                     "document_version"
                                 )
                             ),
+                            "title": parent_chunk.metadata.get("title"),
+                            "aliases": parent_chunk.metadata.get(
+                                "aliases"
+                            ),
                             "fallback_child": True,
                             "content_type": (
                                 parent_chunk.metadata.get(
@@ -391,6 +427,17 @@ class ParentChildChunker:
             segment = clean_text(segment)
             if not segment:
                 continue
+
+            if (
+                current_window
+                and self._is_structural_boundary(segment)
+                and not self._is_structural_boundary(
+                    current_window[-1][1]
+                )
+            ):
+                windows.append(current_window)
+                current_window = []
+                current_tokens = 0
 
             segment_tokens = estimate_token_count(segment)
 

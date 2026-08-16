@@ -17,6 +17,10 @@ class FakeParser:
             file_name = "family.md"
             source_type = "md"
             pages = [_Page()]
+            metadata = {
+                "title": "家庭金融规划指南",
+                "aliases": ["family.md", "家庭金融规划指南"],
+            }
 
         return _Parsed()
 
@@ -92,6 +96,8 @@ def test_ingest_file_builds_typed_parsed_document() -> None:
     assert isinstance(chunker.parsed, ParsedDocument)
     assert chunker.parsed.meta.tenant_id == "t"
     assert chunker.parsed.meta.file_name == "family.md"
+    assert chunker.parsed.meta.title == "家庭金融规划指南"
+    assert "家庭金融规划指南" in chunker.parsed.meta.aliases
     assert len(chunker.parsed.meta.file_sha256) == 64
     assert chunker.parsed.pages[0].page_number == 1
     assert store.deleted is not None
